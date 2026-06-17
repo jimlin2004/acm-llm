@@ -1,0 +1,112 @@
+/* ============================================================
+   ACM Lab – Open WebUI Custom Theme
+   Edit this file then run:
+     docker cp ./webui-assets/custom.css open-webui:/app/build/static/custom.css
+   ============================================================ */
+
+/* ---------- Color palette ---------- */
+:root {
+  --acm-blue:        #1a4f9c;
+  --acm-blue-light:  #2563eb;
+  --acm-blue-dark:   #0f2f5c;
+  --acm-accent:      #f59e0b;   /* amber highlight */
+  --acm-text-muted:  #94a3b8;
+}
+
+/* ---------- Sidebar ---------- */
+/* light mode */
+.sidebar, #sidebar, nav.flex {
+  background-color: #f0f4ff !important;
+  border-right: 1px solid #c7d7f7 !important;
+}
+
+/* dark mode */
+.dark .sidebar,
+.dark #sidebar,
+.dark nav.flex {
+  background-color: #0d1b35 !important;
+  border-right: 1px solid #1e3a6e !important;
+}
+
+/* Sidebar text & icons */
+.dark #sidebar *,
+.dark nav.flex * {
+  --tw-text-opacity: 1;
+}
+
+/* ---------- "New chat" / primary buttons ---------- */
+button[class*="bg-accent"],
+button[class*="bg-blue"] {
+  background-color: var(--acm-blue-light) !important;
+}
+
+button[class*="bg-accent"]:hover,
+button[class*="bg-blue"]:hover {
+  background-color: var(--acm-blue) !important;
+}
+
+/* ---------- Top navbar / header bar ---------- */
+header, .navbar {
+  border-bottom: 2px solid var(--acm-blue-light) !important;
+}
+
+.dark header,
+.dark .navbar {
+  border-bottom: 2px solid var(--acm-blue-dark) !important;
+  background-color: #0d1b35 !important;
+}
+
+/* ---------- Chat send button ---------- */
+button[aria-label="Send message"],
+button[type="submit"] {
+  background-color: var(--acm-blue-light) !important;
+  border-radius: 8px !important;
+}
+
+/* ---------- Model selector highlight ---------- */
+.dark select,
+.dark [role="listbox"] {
+  border-color: var(--acm-blue-dark) !important;
+}
+
+/* ---------- ACM Lab watermark in sidebar ---------- */
+#sidebar::after,
+nav.flex::after {
+  content: "ACM Lab";
+  display: block;
+  position: absolute;
+  bottom: 12px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: var(--acm-blue-light);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.dark #sidebar::after,
+.dark nav.flex::after {
+  color: #60a5fa;
+  opacity: 0.35;
+}
+
+/* ---------- Chat bubble tweaks ---------- */
+.dark .message-user div[class*="bg-"] {
+  background-color: #1e3a6e !important;
+}
+
+/* ---------- Scrollbar ---------- */
+::-webkit-scrollbar {
+  width: 5px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--acm-blue-light);
+  border-radius: 4px;
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: var(--acm-blue-dark);
+}

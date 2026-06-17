@@ -1,0 +1,103 @@
+model_list:
+  # ─── Local vLLM models ───────────────────────────────────────────────
+  - model_name: qwen2.5-1.5b
+    litellm_params:
+      model: openai/qwen2.5-1.5b
+      api_base: http://vllm:8000/v1
+      api_key: vllm
+    model_info:
+      supports_vision: false
+
+  - model_name: qwen3-vl-32b
+    litellm_params:
+      model: openai/qwen3-vl-32b
+      api_base: http://vllm:8000/v1
+      api_key: vllm
+    model_info:
+      supports_vision: true
+
+  # ─── DISABLED: gpt-* aliases pointing to the local Qwen are misleading ──
+  # Uncomment only if an app hardcodes OpenAI model names and must hit the local model.
+  # - model_name: gpt-4o
+  #   litellm_params:
+  #     model: openai/qwen2.5-1.5b
+  #     api_base: http://vllm:8000/v1
+  #     api_key: vllm
+  # - model_name: gpt-4
+  #   litellm_params:
+  #     model: openai/qwen2.5-1.5b
+  #     api_base: http://vllm:8000/v1
+  #     api_key: vllm
+  # - model_name: gpt-4-turbo
+  #   litellm_params:
+  #     model: openai/qwen2.5-1.5b
+  #     api_base: http://vllm:8000/v1
+  #     api_key: vllm
+  # - model_name: gpt-3.5-turbo
+  #   litellm_params:
+  #     model: openai/qwen2.5-1.5b
+  #     api_base: http://vllm:8000/v1
+  #     api_key: vllm
+
+  # ─── OpenAI (key from .env → OPENAI_API_KEY) ─────────────────────────
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  # ─── DISABLED: missing API key. Set the key in .env and uncomment ─────
+  #
+  # Extra OpenAI models — need OPENAI_API_KEY in .env
+  # - model_name: gpt-5-mini
+  #   litellm_params:
+  #     model: openai/gpt-5-mini
+  #     api_key: os.environ/OPENAI_API_KEY
+  #
+  # Google Gemini — need GEMINI_API_KEY (https://aistudio.google.com/apikey)
+  # - model_name: gemini-2.5-flash
+  #   litellm_params:
+  #     model: gemini/gemini-2.5-flash
+  #     api_key: os.environ/GEMINI_API_KEY
+  #
+  # - model_name: gemini-2.5-pro
+  #   litellm_params:
+  #     model: gemini/gemini-2.5-pro
+  #     api_key: os.environ/GEMINI_API_KEY
+  #
+  # Groq — need GROQ_API_KEY (https://console.groq.com/keys)
+  # - model_name: llama-3.3-70b-groq
+  #   litellm_params:
+  #     model: groq/llama-3.3-70b-versatile
+  #     api_key: os.environ/GROQ_API_KEY
+  #
+  # - model_name: qwen-2.5-32b-groq
+  #   litellm_params:
+  #     model: groq/qwen-2.5-32b
+  #     api_key: os.environ/GROQ_API_KEY
+  #
+  # OpenRouter — need OPENROUTER_API_KEY (https://openrouter.ai/keys)
+  # - model_name: deepseek-v3-free
+  #   litellm_params:
+  #     model: openrouter/deepseek/deepseek-chat-v3.1:free
+  #     api_key: os.environ/OPENROUTER_API_KEY
+  #
+  # - model_name: llama-3.3-70b-free
+  #   litellm_params:
+  #     model: openrouter/meta-llama/llama-3.3-70b-instruct:free
+  #     api_key: os.environ/OPENROUTER_API_KEY
+
+litellm_settings:
+  # Do not retry when vLLM fails (avoids double-charging tokens)
+  num_retries: 0
+  request_timeout: 600
+
+general_settings:
+  master_key: sk-acm-llm-master-2026   # used to create virtual keys via API/UI
+  database_url: "postgresql://litellm:litellm2026@litellm-db:5432/litellm"
+  # Take user identity from the header Open WebUI sends (needs ENABLE_FORWARD_USER_INFO_HEADERS=true in Open WebUI)
+  user_header_name: "X-OpenWebUI-User-Email"
+
+  # Default rate limits applied to every key (can be overridden per key)
+  default_team_settings:
+    tpm_limit: 100000    # tokens per minute
+    rpm_limit: 60        # requests per minute

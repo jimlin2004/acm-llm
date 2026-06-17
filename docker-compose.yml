@@ -1,0 +1,68 @@
+###############################################################################
+# ACM LLM Lab – Docker Compose
+#
+# File này chỉ quản lý SearXNG. Các container còn lại của stack hiện chạy
+# NGOÀI compose (khởi động bằng docker run, đừng `docker compose down` chúng):
+#
+#   qwen3-vl-32b  vllm/vllm-openai:latest, network bridge, port 8000
+#                 --model Qwen/Qwen3-VL-32B-Thinking-FP8 --served-model-name qwen3-vl-32b
+#                 --max-model-len 32768 --gpu-memory-utilization 0.85
+#                 --reasoning-parser qwen3   (chỉ GPU 1, DeviceIDs=["1"])
+#   open-webui    ghcr.io/open-webui/open-webui:cuda, network bridge, port 3000→8080
+#                 OPENAI_API_BASE_URL=http://host.docker.internal:8000/v1
+#                 volume open-webui:/app/backend/data
+#   ollama        chạy trên host (systemd, *:11434) — model nhỏ qwen2.5:3b-instruct
+#                 làm intent router cho orchestrator (ROUTER_LLM_* trong .env)
+#
+# Orchestrator + sim-mock: xem docker-compose.orchestrator.yml.
+# Monitoring (grafana/prometheus/loki...): compose riêng ngoài repo này.
+#
+# Usage:  docker compose up -d searxng
+###############################################################################
+
+networks:
+  app-net:
+    external: true   # created by: docker network create app-net
+
+services:
+
+  # ──────────────────────────────────────────────────────────────
+  # SEARXNG  –  Private meta-search engine (web search cho Open WebUI)
+  #    UI:   http://localhost:5050
+  #    Open WebUI gọi qua http://host.docker.internal:5050 (nó ở bridge net)
+  # ──────────────────────────────────────────────────────────────
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    restart: unless-stopped
+    networks:
+      - app-net
+
+    environment:
+      - BASE_URL=http://0.0.0.0:5050/
+      - INSTANCE_NAME=acm-searxng
+      - AUTOCOMPLETE=false
+
+    ports:
+      - "5050:8080"
+
+    volumes:
+      - ./searxng:/etc/searxng
+
+    tty: false
+    stdin_open: false
+    security_opt:
+      - "no-new-privileges=true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "10"
+        max-size: "20m"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m

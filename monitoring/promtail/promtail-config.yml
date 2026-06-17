@@ -1,0 +1,56 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: warn
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+
+  # Collect logs from ALL running Docker containers via Docker socket discovery.
+  # Promtail finds each container, attaches labels (container name, service, etc.),
+  # then reads its JSON log file from /var/lib/docker/containers/.
+  #
+  # Key use-case: every time the LLM triggers a web search, Open WebUI calls
+  # http://searxng:8080/search?q=<query>&format=json
+  # SearXNG logs that request → Promtail ships it to Loki → visible in Grafana.
+  - job_name: docker-containers
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+        filters:
+          - name: status
+            values: ["running"]
+
+    relabel_configs:
+      # Strip leading slash from container name  (e.g. /searxng → searxng)
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: container
+
+      # Attach Docker Compose service name as label
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        target_label: compose_service
+
+      # Attach log stream (stdout / stderr)
+      - source_labels: ['__meta_docker_container_log_stream']
+        target_label: stream
+
+    pipeline_stages:
+      # Docker log driver wraps lines in JSON: {"log":"...", "stream":"...", "time":"..."}
+      - json:
+          expressions:
+            output:    log
+            stream:    stream
+            timestamp: time
+
+      - timestamp:
+          source: timestamp
+          format: RFC3339Nano
+
+      - output:
+          source: output

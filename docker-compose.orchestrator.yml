@@ -1,0 +1,52 @@
+###############################################################################
+# Orchestrator stack (see docs/orchestrator.md + orchestrator/README.md)
+#
+# Standalone compose file — does not touch the running vllm/open-webui
+# containers. LLM calls go straight to vLLM on the host port 8000.
+#
+# Usage:
+#   docker compose -f docker-compose.orchestrator.yml up -d --build
+#
+# Swap the mock simulator for the real one by setting SIM_API_URL in .env
+# (e.g. SIM_API_URL=https://real-sim-server/simulate) and removing sim-mock.
+###############################################################################
+
+networks:
+  app-net:
+    external: true
+
+services:
+
+  orchestrator:
+    build: ./orchestrator
+    container_name: orchestrator
+    restart: unless-stopped
+    networks:
+      - app-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:8000/v1}
+      - LLM_API_KEY=${LLM_API_KEY:-none}
+      - LLM_MODEL=${LLM_MODEL:-qwen3-vl-32b}
+      - ROUTER_LLM_BASE_URL=${ROUTER_LLM_BASE_URL:-}
+      - ROUTER_LLM_API_KEY=${ROUTER_LLM_API_KEY:-}
+      - ROUTER_LLM_MODEL=${ROUTER_LLM_MODEL:-}
+      - SIM_API_URL=${SIM_API_URL:-http://sim-mock:9000/simulate}
+      - SIM_API_KEY=${SIM_API_KEY:-}
+      - SIM_TIMEOUT=${SIM_TIMEOUT:-180}
+      - SIM_RETRIES=${SIM_RETRIES:-1}
+    ports:
+      - "8100:8000"
+    volumes:
+      - ./orchestrator/data:/data
+
+  sim-mock:
+    build: ./orchestrator
+    container_name: sim-mock
+    restart: unless-stopped
+    networks:
+      - app-net
+    command: ["uvicorn", "mock_sim_server:app", "--host", "0.0.0.0", "--port", "9000"]
+    ports:
+      - "9000:9000"

@@ -1,0 +1,22 @@
+use_default_settings: true
+
+general:
+  instance_name: "ACM Lab Search"
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  formats:
+    - html
+    - json
+
+server:
+  port: 8080
+  bind_address: "0.0.0.0"
+  secret_key: "5b98642e5256fe01e80b173a7cac89653c8141a44cc52a19526409898d8bb0b9"
+  limiter: false
+  image_proxy: true
+
+ui:
+  default_locale: ""
+  default_theme: simple

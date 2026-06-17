@@ -1,0 +1,197 @@
+###############################################################################
+# ACM LLM Lab – Monitoring Stack
+#
+# Services:
+#   Prometheus        → metrics collection      http://localhost:9090
+#   Grafana           → dashboards              http://localhost:3001
+#   cAdvisor          → container metrics       http://localhost:8081
+#   node-exporter     → host metrics            port 9100
+#   nvidia-gpu-exporter → GPU metrics           port 9835
+#   Loki              → log storage             port 3100
+#   Promtail          → log collector (reads Docker container logs)
+#
+# Usage:
+#   docker compose -f monitoring/docker-compose.monitoring.yml up -d
+#   docker compose -f monitoring/docker-compose.monitoring.yml down
+#
+# Access (single URL for all monitoring):
+#   http://140.113.28.150:3001   →  Grafana  (admin / acm@llm2026)
+#
+# All other services (Prometheus, Loki, cAdvisor, exporters) are internal only.
+###############################################################################
+
+networks:
+  monitoring-net:
+    driver: bridge
+  app-net:
+    external: true   # shared with main services so Prometheus can scrape ollama
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  loki-data:
+
+services:
+
+  # ── Prometheus ─────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    networks:
+      - monitoring-net
+      - app-net           # needed to reach ollama:11434
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    security_opt:
+      - "no-new-privileges=true"
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "3"
+        max-size: "10m"
+
+  # ── Grafana ────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    networks:
+      - monitoring-net
+    ports:
+      - "3001:3000"     # 3000 is already used by open-webui
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=acm@llm2026
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+    depends_on:
+      - prometheus
+      - loki
+    security_opt:
+      - "no-new-privileges=true"
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "3"
+        max-size: "10m"
+
+  # ── cAdvisor – per-container CPU / RAM / Network ───────────────────────────
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    restart: unless-stopped
+    networks:
+      - monitoring-net
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    privileged: true
+    devices:
+      - /dev/kmsg
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "3"
+        max-size: "10m"
+
+  # ── node-exporter – host CPU / RAM / Disk / Network ───────────────────────
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    restart: unless-stopped
+    networks:
+      - monitoring-net
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    security_opt:
+      - "no-new-privileges=true"
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "3"
+        max-size: "10m"
+
+  # ── NVIDIA GPU Exporter – utilization / VRAM / temp / power ───────────────
+  nvidia-gpu-exporter:
+    image: utkuozdemir/nvidia_gpu_exporter:1.2.1
+    container_name: nvidia-gpu-exporter
+    restart: unless-stopped
+    networks:
+      - monitoring-net
+    # Limit to safe fields — newer NVIDIA drivers added fields with spaces that
+    # crash the exporter's metric name validator
+    command:
+      - '--query-field-names=utilization.gpu,utilization.memory,memory.used,memory.free,memory.total,temperature.gpu,power.draw,power.limit,name,index,uuid,driver_version'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "3"
+        max-size: "10m"
+
+  # ── Loki – centralised log storage ────────────────────────────────────────
+  loki:
+    image: grafana/loki:latest
+    container_name: loki
+    restart: unless-stopped
+    networks:
+      - monitoring-net
+    volumes:
+      - ./loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    security_opt:
+      - "no-new-privileges=true"
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "3"
+        max-size: "10m"
+
+  # ── Promtail – reads Docker container logs → Loki ─────────────────────────
+  # This is what captures every SearXNG search request made by the LLM
+  promtail:
+    image: grafana/promtail:latest
+    container_name: promtail
+    restart: unless-stopped
+    networks:
+      - monitoring-net
+    volumes:
+      - ./promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: -config.file=/etc/promtail/config.yml
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "3"
+        max-size: "10m"

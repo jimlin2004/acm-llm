@@ -1,0 +1,205 @@
+openapi: 3.1.0
+info:
+  title: OpenClaw Circuit Simulation API
+  version: "1.0"
+  description: |
+    API mà server mô phỏng OpenClaw phải publish để orchestrator (acm-llm)
+    gọi được. Contract phía client đã cố định trong `app/tools/simulator.py`
+    — OpenClaw triển khai đúng spec này thì chỉ cần đổi biến môi trường
+    `SIM_API_URL` là thay được mock, không sửa code orchestrator.
+
+    Xem docs/sim-api-spec.md để biết yêu cầu vận hành (timeout, retry, kích
+    thước response).
+
+servers:
+  - url: http://openclaw:9000
+    description: server mô phỏng OpenClaw (đặt qua SIM_API_URL)
+
+security:
+  - bearerAuth: []
+
+paths:
+  /simulate:
+    post:
+      operationId: simulate
+      summary: Chạy mô phỏng một netlist SPICE và trả kết quả (đồng bộ)
+      description: |
+        Nhận netlist SPICE, chạy các analysis khai báo trong netlist
+        (.op/.ac/.dc/.tran/.noise...), trả kết quả trong cùng một request.
+        Phải trả lời trong vòng SIM_TIMEOUT của client (mặc định 180 s).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SimRequest"
+      responses:
+        "200":
+          description: |
+            Mô phỏng đã được thực thi. Kể cả khi mạch lỗi (không hội tụ,
+            netlist sai cú pháp SPICE...) vẫn trả 200 với `status: "error"`
+            kèm `errors`/`log` — để LLM đọc được lỗi và giải thích cho user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SimResponse"
+        "400":
+          description: Request sai định dạng (thiếu `netlist`, JSON hỏng). Client KHÔNG retry, message hiển thị cho user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HttpError"
+        "401":
+          description: Thiếu hoặc sai Bearer token. Client KHÔNG retry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HttpError"
+        "500":
+          description: Lỗi nội bộ server. Client retry tối đa 2 lần (backoff 2s/4s) — handler phải an toàn khi bị gọi lặp lại.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HttpError"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        `Authorization: Bearer <SIM_API_KEY>`. Client chỉ gửi header khi
+        SIM_API_KEY được cấu hình; nếu server không cần auth thì bỏ qua.
+
+  schemas:
+    SimRequest:
+      type: object
+      required: [netlist]
+      properties:
+        netlist:
+          type: string
+          description: Netlist SPICE đầy đủ (UTF-8), gồm cả các dòng .ac/.tran/.op/.end.
+          examples:
+            - |
+              * RC low-pass filter
+              V1 in 0 AC 1
+              R1 in out 1k
+              C1 out 0 159n
+              .ac dec 10 10 1Meg
+              .end
+        options:
+          type: object
+          description: |
+            Tuỳ chọn mô phỏng, mặc định {}. Server tự định nghĩa key và phải
+            bỏ qua key lạ (không được trả lỗi). Gợi ý chuẩn hoá:
+            `engine`, `temperature_c`, `corner`, `max_runtime_s`.
+          additionalProperties: true
+          default: {}
+          properties:
+            include_waveforms:
+              type: boolean
+              default: false
+              description: |
+                true → response có thêm trường `waveforms` (mảng x/y đã
+                decimate) để client tự vẽ biểu đồ. Mặc định tắt để giữ
+                response < 50 KB cho caller cũ.
+            max_points:
+              type: integer
+              default: 2000
+              minimum: 1
+              maximum: 20000
+              description: Số điểm tối đa mỗi waveform (server decimate đều, luôn giữ điểm đầu/cuối).
+
+    SimResponse:
+      type: object
+      required: [status, results, log]
+      description: |
+        Object này (trừ `waveforms`) được đưa nguyên văn vào prompt LLM —
+        chỉ trả metric tổng hợp trong `results`. Tổng kích thước nên < 50 KB
+        (`log` cắt còn vài KB cuối); khi `include_waveforms=true` budget nới
+        lên ~2 MB và client phải tự tách `waveforms` ra trước khi prompt LLM.
+      properties:
+        status:
+          type: string
+          enum: [ok, error]
+          description: ok = mô phỏng chạy xong; error = chạy thất bại (chi tiết trong errors/log).
+        engine:
+          type: string
+          description: Tên + version engine, ví dụ "ngspice-42".
+        analyses_run:
+          type: array
+          items:
+            type: string
+          description: Các analysis đã chạy, ví dụ ["op", "ac"].
+        results:
+          type: object
+          description: |
+            Kết quả theo từng analysis. Key = tên analysis, value = object
+            các metric số đã tổng hợp. Trả {} khi status = error.
+          additionalProperties:
+            type: object
+            additionalProperties: true
+          examples:
+            - op: { "v(out)": 2.5, "v(in)": 5.0, "i(v1)": -0.0025 }
+              ac: { gain_db_at_1khz: -3.01, f_3db_hz: 1002.7, phase_margin_deg: 67.2 }
+              tran: { v_out_peak: 1.23, settling_time_us: 4.5, overshoot_pct: 8.1 }
+        log:
+          type: string
+          description: Log simulator (đã cắt gọn) — phần quan trọng nhất khi status = error.
+        warnings:
+          type: array
+          items:
+            type: string
+          default: []
+        errors:
+          type: array
+          items:
+            type: string
+          description: Bắt buộc khác rỗng khi status = error.
+          default: []
+        waveforms:
+          type: object
+          description: |
+            Chỉ có khi request đặt `options.include_waveforms=true`. Key =
+            tên analysis (`ac`/`tran`/`dc`), value = dữ liệu x/y đã decimate
+            về `max_points` để client tự vẽ. Series theo analysis:
+            ac → gain_db + phase_deg (x = frequency Hz), tran → v_out
+            (x = time s), dc → v_out (x = sweep). op/noise không có waveform.
+          additionalProperties:
+            $ref: "#/components/schemas/Waveform"
+
+    Waveform:
+      type: object
+      required: [x, series]
+      properties:
+        x_name:
+          type: string
+          description: Tên trục X, ví dụ "frequency", "time", "sweep".
+        x_unit:
+          type: string
+          description: Đơn vị trục X, ví dụ "Hz", "s".
+        x:
+          type: array
+          items:
+            type: number
+        series:
+          type: object
+          description: Mỗi key là một đường (cùng độ dài với `x`).
+          additionalProperties:
+            type: array
+            items:
+              type: number
+        points:
+          type: integer
+          description: Số điểm sau decimation.
+        truncated:
+          type: boolean
+          description: true nếu dữ liệu gốc đã bị giảm mẫu về max_points.
+
+    HttpError:
+      type: object
+      required: [detail]
+      properties:
+        detail:
+          type: string
+          description: Mô tả lỗi ngắn gọn, an toàn để hiển thị cho end-user.

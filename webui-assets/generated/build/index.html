@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<link rel="icon" type="image/png" href="/static/favicon.png" crossorigin="use-credentials" />
+		<link
+			rel="icon"
+			type="image/png"
+			href="/static/favicon-96x96.png"
+			sizes="96x96"
+			crossorigin="use-credentials"
+		/>
+		<link
+			rel="icon"
+			type="image/svg+xml"
+			href="/static/favicon.svg"
+			crossorigin="use-credentials"
+		/>
+		<link rel="shortcut icon" href="/static/favicon.ico" crossorigin="use-credentials" />
+		<link
+			rel="apple-touch-icon"
+			sizes="180x180"
+			href="/static/apple-touch-icon.png"
+			crossorigin="use-credentials"
+		/>
+		<link rel="manifest" href="/manifest.json" crossorigin="use-credentials" />
+		<meta
+			name="viewport"
+			content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+		/>
+		<meta name="theme-color" content="#171717" />
+		<meta name="robots" content="noindex,nofollow" />
+
+		<script src="/static/loader.js" defer crossorigin="use-credentials"></script>
+		<link rel="stylesheet" href="/static/custom.css" crossorigin="use-credentials" />
+
+		<script>
+			function resizeIframe(obj) {
+				obj.style.height = obj.contentWindow.document.documentElement.scrollHeight + 'px';
+			}
+		</script>
+
+		<script>
+			// On page load or when changing themes, best to add inline in `head` to avoid FOUC
+			(() => {
+				const metaThemeColorTag = document.querySelector('meta[name="theme-color"]');
+				const prefersDarkTheme = window.matchMedia('(prefers-color-scheme: dark)').matches;
+
+				if (!localStorage?.theme) {
+					localStorage.theme = 'system';
+				}
+
+				if (localStorage.theme === 'system') {
+					document.documentElement.classList.add(prefersDarkTheme ? 'dark' : 'light');
+					metaThemeColorTag.setAttribute('content', prefersDarkTheme ? '#171717' : '#ffffff');
+				} else if (localStorage.theme === 'oled-dark') {
+					document.documentElement.style.setProperty('--color-gray-800', '#101010');
+					document.documentElement.style.setProperty('--color-gray-850', '#050505');
+					document.documentElement.style.setProperty('--color-gray-900', '#000000');
+					document.documentElement.style.setProperty('--color-gray-950', '#000000');
+					document.documentElement.classList.add('dark');
+					metaThemeColorTag.setAttribute('content', '#000000');
+				} else if (localStorage.theme === 'light') {
+					document.documentElement.classList.add('light');
+					metaThemeColorTag.setAttribute('content', '#ffffff');
+				} else if (localStorage.theme === 'her') {
+					document.documentElement.classList.add('her');
+					metaThemeColorTag.setAttribute('content', '#983724');
+				} else {
+					document.documentElement.classList.add('dark');
+					metaThemeColorTag.setAttribute('content', '#171717');
+				}
+
+				const preloadHref = document.documentElement.classList.contains('dark')
+					? '/static/splash-dark.png'
+					: '/static/splash.png';
+				const preload = document.createElement('link');
+				preload.rel = 'preload';
+				preload.as = 'image';
+				preload.href = preloadHref;
+				preload.setAttribute('fetchpriority', 'high');
+				document.head.appendChild(preload);
+
+				window.matchMedia('(prefers-color-scheme: dark)').addListener((e) => {
+					if (localStorage.theme === 'system') {
+						if (e.matches) {
+							document.documentElement.classList.add('dark');
+							document.documentElement.classList.remove('light');
+							metaThemeColorTag.setAttribute('content', '#171717');
+						} else {
+							document.documentElement.classList.add('light');
+							document.documentElement.classList.remove('dark');
+							metaThemeColorTag.setAttribute('content', '#ffffff');
+						}
+					}
+				});
+				const isDarkMode = document.documentElement.classList.contains('dark');
+
+				const logo = document.createElement('img');
+				logo.id = 'logo';
+				logo.style =
+					'position: absolute; width: auto; height: 6rem; top: 44%; left: 50%; transform: translateX(-50%); display:block;';
+				logo.loading = 'eager';
+				logo.fetchPriority = 'high';
+				logo.src = isDarkMode ? '/static/splash-dark.png' : '/static/splash.png';
+
+				document.addEventListener('DOMContentLoaded', function () {
+					const splash = document.getElementById('splash-screen');
+					if (document.documentElement.classList.contains('her')) {
+						return;
+					}
+
+					if (splash) splash.prepend(logo);
+				});
+			})();
+		</script>
+
+		<title>ACM Lab</title>
+
+		<link href="/_app/immutable/entry/start.DpvgPf6x.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/QkOXi479.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/CD8kWLvT.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/DIeogL5L.js" rel="modulepreload">
+		<link href="/_app/immutable/entry/app.BhmiQ6a9.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/C1FmrZbK.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/DTNUVO6b.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/CWj6FrbW.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/CdIW-EUl.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/Ddz0t7xa.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/BCA7d6a5.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/DbBXQmQ3.js" rel="modulepreload">
+		<link href="/_app/immutable/nodes/0.ylpR4Kxa.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/69_IOA4Y.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/ByAzvrkO.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/d1mQnqxV.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/BfA5TzUS.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/BolXBFGq.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/BcxXcwBL.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/BDmj1FQE.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/DDjvPYNk.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/BUYMbiFA.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/DtbOSK9Q.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/eA4VTZeD.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/0x_ziIoW.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/Cv_qS-XY.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/gOg4dDIw.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/BC4znSyB.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/Bp9Sdq8c.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/DgCmIQGJ.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/vdrgGlnl.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/D2f6I4GZ.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/B2185GOa.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/BT28bLwl.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/QjJsDpFa.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/C9V8djdU.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/D1-OhjYz.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/o-lK5ZUj.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/CM1ysVtg.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/Dur7njV7.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/DFTTp_jb.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/BF53ePKb.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/Bfc47y5P.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/CGOTt5HQ.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/D48hh3kS.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/BUv1YIBp.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/sSXaIhmU.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/CXaewINb.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/B6VcIur7.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/BqNz_fa8.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/DG5Yj6gh.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/BmeGoil0.js" rel="modulepreload">
+		
+		<link href="/_app/immutable/assets/Toaster.DKF17Rty.css" rel="stylesheet">
+		<link href="/_app/immutable/assets/Confetti.VzC_X4OY.css" rel="stylesheet">
+		<link href="/_app/immutable/assets/Modal.CSlFhZkq.css" rel="stylesheet">
+		<link href="/_app/immutable/assets/0.CQ3Ofk-z.css" rel="stylesheet">
+	</head>
+
+	<body data-sveltekit-preload-data="hover">
+		<div style="display: contents">
+			<script>
+				{
+					__sveltekit_149mpr2 = {
+						base: ""
+					};
+
+					const element = document.currentScript.parentElement;
+
+					Promise.all([
+						import("/_app/immutable/entry/start.DpvgPf6x.js"),
+						import("/_app/immutable/entry/app.BhmiQ6a9.js")
+					]).then(([kit, app]) => {
+						kit.start(app, element);
+					});
+				}
+			</script>
+		</div>
+
+		<div
+			id="splash-screen"
+			style="position: fixed; z-index: 100; top: 0; left: 0; width: 100%; height: 100%"
+		>
+			<style type="text/css" nonce="">
+				html {
+					overflow-y: scroll !important;
+				}
+			</style>
+
+			<div
+				style="
+					position: absolute;
+					top: 33%;
+					left: 50%;
+
+					width: 24rem;
+					transform: translateX(-50%);
+
+					display: flex;
+					flex-direction: column;
+					align-items: center;
+				"
+			>
+				<img
+					id="logo-her"
+					style="width: auto; height: 13rem"
+					src="/static/splash.png"
+					loading="eager"
+					fetchpriority="high"
+					class="animate-pulse-fast"
+				/>
+
+				<div style="position: relative; width: 24rem; margin-top: 0.5rem">
+					<div
+						id="progress-background"
+						style="
+							position: absolute;
+							width: 100%;
+							height: 0.75rem;
+
+							border-radius: 9999px;
+							background-color: #fafafa9a;
+						"
+					></div>
+
+					<div
+						id="progress-bar"
+						style="
+							position: absolute;
+							width: 0%;
+							height: 0.75rem;
+							border-radius: 9999px;
+							background-color: #fff;
+						"
+						class="bg-white"
+					></div>
+				</div>
+			</div>
+
+			<!-- <span style="position: absolute; bottom: 32px; left: 50%; margin: -36px 0 0 -36px">
+				Footer content
+			</span> -->
+		</div>
+	</body>
+
+	<style type="text/css" nonce="">
+		html {
+			overflow-y: hidden !important;
+			overscroll-behavior-y: none;
+		}
+
+		#splash-screen {
+			background: #fff;
+		}
+
+		html.dark #splash-screen {
+			background: #000;
+		}
+
+		html.her #splash-screen {
+			background: #983724;
+		}
+
+		#logo-her {
+			display: none;
+		}
+
+		#progress-background {
+			display: none;
+		}
+
+		#progress-bar {
+			display: none;
+		}
+
+		html.her #logo {
+			display: none;
+		}
+
+		html.her #logo-her {
+			display: block;
+			filter: invert(1);
+		}
+
+		html.her #progress-background {
+			display: block;
+		}
+
+		html.her #progress-bar {
+			display: block;
+		}
+
+		@media (max-width: 24rem) {
+			html.her #progress-background {
+				display: none;
+			}
+
+			html.her #progress-bar {
+				display: none;
+			}
+		}
+
+		@keyframes pulse {
+			50% {
+				opacity: 0.65;
+			}
+		}
+
+		.animate-pulse-fast {
+			animation: pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+		}
+	</style>
+</html>
