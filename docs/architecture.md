@@ -22,7 +22,7 @@ contract see [`sim-api-spec.md`](sim-api-spec.md) and
 | **sim-mock** | container, `app-net` | `9000` | Bundled reference simulator; used when `SIM_API_URL` is not pointed at OpenClaw. |
 | **OpenClaw sim-server** | external, via Tailscale | `100.83.32.87:9000` | Real ngspice circuit simulation (`POST /simulate`). |
 | **Open WebUI** | container, bridge net | internal `8080`→host `3010` | Chat UI. The **"ACM Assistant"** model is a pipe to the orchestrator. |
-| **Caddy** `caddy-proxy` | container | `:3000` | Reverse proxy in front of Open WebUI; also routes `/openclaw-files/*` to the OpenClaw image-share. |
+| **Caddy** `caddy-proxy` | host net | `:3000`, `:8081` | `:3000` fronts Open WebUI (+ `/openclaw-files/*` → OpenClaw image-share). `:8081` is the authenticated **LLM gateway** (shared Bearer key → vLLM) for external OpenAI-compatible callers. See [`llm-api-access.md`](llm-api-access.md). |
 | **SearXNG** | container, `app-net` | host `5050` | Private meta-search backing Open WebUI web search. |
 | **Monitoring** | separate compose | – | Grafana, Prometheus, Loki, cAdvisor, node-exporter, promtail, nvidia-gpu-exporter. |
 

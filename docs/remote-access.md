@@ -4,12 +4,14 @@ How a person or an external system reaches the lab **privately**, either over **
 (remote / cross-network) or over the **internal LAN** (same network).
 
 > **History:** access used to go through a **LiteLLM proxy** with per-client virtual keys.
-> LiteLLM was removed on 2026-06-15. There is **no authenticated LLM gateway in the stack
-> right now** — see [§4](#4-programmatic-api-access) for the current options and the gap.
+> LiteLLM was removed on 2026-06-15. Programmatic OpenAI-compatible access for external
+> parties now goes through a **Caddy gateway on `:8081`** with a shared Bearer key — see
+> [§4](#4-programmatic-api-access) and [`llm-api-access.md`](llm-api-access.md).
 
 > **Golden rule:** never expose **vLLM** (`:8002`) directly. It has no authentication —
 > anyone who reaches it can use the GPUs for free. Only ever expose a fronted, authenticated
-> service (Open WebUI behind Caddy), and only over Tailscale or a firewalled LAN port.
+> service (Open WebUI on `:3000`, or the LLM gateway on `:8081`), and only over Tailscale or
+> a firewalled LAN port.
 
 ---
 
@@ -39,7 +41,7 @@ This host (`user-WS990T`) is reachable on:
 
 | Network | Address | Use when |
 |---|---|---|
-| Campus / internal LAN | `140.113.28.150` | Caller is on the same NCKU network |
+| Campus / internal LAN | `140.113.28.150` | Caller is on the same NYCU network |
 | Tailscale (private mesh VPN) | `100.83.40.102` | Caller is remote / on a different network |
 | Tailscale MagicDNS | `user-ws990t.taile0a1fc.ts.net` | Same as above, by name |
 
@@ -91,26 +93,34 @@ sudo ufw allow from 140.113.0.0/16 to any port 3000 proto tcp   # restrict to ca
 
 ## 4. Programmatic API access
 
-For a **human user**, the UI above is enough. For an **external system** that needs an
-OpenAI-compatible API, the supported path is **Open WebUI's built-in API**:
+For a **human user**, the UI on `:3000` is enough. For an **external system** that needs an
+OpenAI-compatible API, point it at the **LLM gateway on `:8081`** (Caddy → vLLM, shared
+Bearer key):
 
-1. In Open WebUI: **Settings → Account → API Keys → Create** a key for the caller.
-2. The caller points an OpenAI client at Open WebUI:
-   ```python
-   from openai import OpenAI
-   client = OpenAI(base_url="http://100.83.40.102:3000/api", api_key="<webui-api-key>")
-   resp = client.chat.completions.create(
-       model="ACM Assistant",                       # or another registered model
-       messages=[{"role": "user", "content": "Hello"}],
-   )
-   print(resp.choices[0].message.content)
-   ```
-3. List models: `GET http://<host>:3000/api/models` with the same `Authorization: Bearer`.
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://140.113.28.150:8081/v1",   # or Tailscale 100.83.40.102:8081
+                api_key="<shared-key>")                      # from caddy/llm-gateway.key
+resp = client.chat.completions.create(
+    model="qwen3.6-35b-a3b",
+    messages=[{"role": "user", "content": "Hello"}],
+    max_tokens=1024)
+print(resp.choices[0].message.content)
+```
 
-> **Gap to be aware of:** Open WebUI keys are per-user, not the budget/rate-limited virtual
-> keys LiteLLM used to provide. If a partner needs **scoped, rate-limited, metered** API keys
-> (the old `max_budget` / `rpm_limit` model), reintroduce a gateway in front of vLLM. Do not
-> hand out raw access to `:8002` — it is unauthenticated.
+Full partner-facing instructions (Tailscale onboarding, streaming, vision, gotchas) are in
+[`llm-api-access.md`](llm-api-access.md).
+
+How it is wired:
+- Caddy `:8081` checks `Authorization: Bearer <key>` and `reverse_proxy 127.0.0.1:8002`;
+  missing/wrong key → `401`, so it never reaches vLLM.
+- Shared key lives in `caddy/llm-gateway.key` (chmod 600, not committed); rotate by editing
+  the `:8081` block in `caddy/config/Caddyfile` + the key file, then `docker restart caddy-proxy`.
+
+> **Gap to be aware of:** this is a **single shared key** — no per-caller budgets or rate
+> limits (what LiteLLM's virtual keys gave). If you need **scoped, rate-limited, metered**
+> keys, reintroduce a gateway like LiteLLM in front of vLLM. Either way, never hand out raw
+> access to `:8002` — it is unauthenticated.
 
 ---
 
@@ -133,7 +143,10 @@ If this fails:
 
 ## 6. Security checklist
 
-- [x] vLLM (`:8002`) has no published external route; only Caddy/Open WebUI is exposed.
+- [ ] vLLM (`:8002`) blocked from the LAN/Tailscale interfaces (iptables `DOCKER-USER`); only
+      Caddy (localhost) and the docker bridge (orchestrator) reach it. External callers use
+      the authenticated gateway on `:8081` instead.
+- [ ] Gateway shared key (`caddy/llm-gateway.key`) kept private; rotated if leaked.
 - [ ] Prefer **Tailscale** (encrypted) for anything off-LAN.
 - [ ] Firewall scoped to the campus range / tailnet rather than `0.0.0.0/0` where possible.
 - [ ] If ever exposed to the public internet, put TLS in front (Caddy on `443`), not plain HTTP.
