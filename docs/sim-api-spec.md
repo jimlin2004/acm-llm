@@ -1,23 +1,23 @@
-# Spec API server mô phỏng OpenClaw (bàn giao cho team OpenClaw)
+# Simulation API Spec — OpenClaw sim-server (handover to the OpenClaw team)
 
-Tài liệu yêu cầu cho **server mô phỏng mạch OpenClaw** (đang xây mới): publish
-đúng API dưới đây thì orchestrator dùng được ngay — chỉ cần đổi `SIM_API_URL`
-(và `SIM_API_KEY` nếu có auth) trỏ sang OpenClaw, không sửa code orchestrator.
+Requirements for the **OpenClaw circuit simulation server**: publish exactly the API below
+and the orchestrator works against it immediately — you only point `SIM_API_URL` (and
+`SIM_API_KEY` if auth is on) at OpenClaw, with no changes to orchestrator code.
 
-- Spec máy đọc được (nguồn chuẩn): [`orchestrator/sim-api.openapi.yaml`](../orchestrator/sim-api.openapi.yaml)
-- Mock tham chiếu đang chạy trong stack: `orchestrator/mock_sim_server.py` (port 9000)
-- Client phía orchestrator (contract đã cố định): `orchestrator/app/tools/simulator.py`
+- Machine-readable spec (source of truth): [`../orchestrator/sim-api.openapi.yaml`](../orchestrator/sim-api.openapi.yaml)
+- Reference mock running in the stack: `orchestrator/mock_sim_server.py` (port 9000)
+- Orchestrator-side client (contract is fixed): `orchestrator/app/tools/simulator.py`
 
 ## 1. Endpoint
 
 ```
 POST /simulate
 Content-Type: application/json
-Authorization: Bearer <SIM_API_KEY>   # chỉ gửi khi orchestrator được cấu hình key
+Authorization: Bearer <SIM_API_KEY>   # only sent when the orchestrator is configured with a key
 ```
 
-Đường dẫn không bắt buộc là `/simulate` — orchestrator gọi nguyên URL trong
-`SIM_API_URL` — nhưng OpenClaw nên giữ `/simulate` cho thống nhất với mock.
+The path does not have to be `/simulate` — the orchestrator calls the full URL in
+`SIM_API_URL` — but OpenClaw should keep `/simulate` for consistency with the mock.
 
 ## 2. Request
 
@@ -28,12 +28,12 @@ Authorization: Bearer <SIM_API_KEY>   # chỉ gửi khi orchestrator được c�
 }
 ```
 
-| Field     | Kiểu   | Bắt buộc | Ghi chú |
-|-----------|--------|----------|---------|
-| `netlist` | string | ✅       | Netlist SPICE đầy đủ (UTF-8), gồm cả directive `.op/.ac/.dc/.tran/.noise` và `.end`. Server chạy đúng các analysis khai báo trong netlist. |
-| `options` | object | ❌ (mặc định `{}`) | Tuỳ chọn do server định nghĩa (`engine`, `temperature_c`, `corner`, `max_runtime_s`...). **Phải bỏ qua key lạ**, không được trả lỗi vì key không hỗ trợ. |
+| Field     | Type   | Required | Notes |
+|-----------|--------|----------|-------|
+| `netlist` | string | ✅       | Complete SPICE netlist (UTF-8), including the `.op/.ac/.dc/.tran/.noise` directives and `.end`. The server runs exactly the analyses declared in the netlist. |
+| `options` | object | ❌ (default `{}`) | Server-defined options (`engine`, `temperature_c`, `corner`, `max_runtime_s`, …). **Unknown keys must be ignored** — do not error on an unsupported key. |
 
-## 3. Response 200 — kết quả mô phỏng
+## 3. Response 200 — simulation result
 
 ```json
 {
@@ -50,84 +50,84 @@ Authorization: Bearer <SIM_API_KEY>   # chỉ gửi khi orchestrator được c�
 }
 ```
 
-| Field          | Kiểu             | Bắt buộc | Ghi chú |
-|----------------|------------------|----------|---------|
-| `status`       | `"ok" \| "error"`| ✅       | `error` = mô phỏng thất bại (không hội tụ, netlist sai cú pháp...). |
-| `results`      | object           | ✅       | Key = tên analysis, value = object metric **số đã tổng hợp**. `{}` khi `status="error"`. |
-| `log`          | string           | ✅       | Log simulator đã cắt gọn — phần quan trọng nhất khi lỗi. |
-| `engine`       | string           | nên có   | Tên + version engine. |
-| `analyses_run` | string[]         | nên có   | Các analysis thực tế đã chạy. |
-| `warnings`     | string[]         | nên có   | Mặc định `[]`. |
-| `errors`       | string[]         | nên có   | Bắt buộc khác rỗng khi `status="error"`. |
+| Field          | Type             | Required | Notes |
+|----------------|------------------|----------|-------|
+| `status`       | `"ok" \| "error"`| ✅       | `error` = simulation failed (non-convergence, syntax error, …). |
+| `results`      | object           | ✅       | Key = analysis name, value = object of **aggregated scalar metrics**. `{}` when `status="error"`. |
+| `log`          | string           | ✅       | Trimmed simulator log — the most important part on failure. |
+| `engine`       | string           | recommended | Engine name + version. |
+| `analyses_run` | string[]         | recommended | Analyses actually executed. |
+| `warnings`     | string[]         | recommended | Defaults to `[]`. |
+| `errors`       | string[]         | recommended | Must be non-empty when `status="error"`. |
 
-**Quan trọng — lỗi mô phỏng vẫn trả HTTP 200.** Netlist sai cú pháp SPICE,
-mạch không hội tụ, analysis fail... đều trả `200 + status:"error" + errors/log`.
-Lý do: response được đưa nguyên văn cho LLM để nó đọc lỗi và giải thích/gợi ý
-sửa cho user. Chỉ dùng 4xx/5xx cho lỗi ở tầng HTTP/hệ thống (xem §4).
+**Important — a failed simulation still returns HTTP 200.** A SPICE syntax error, a circuit
+that fails to converge, a failed analysis… all return `200 + status:"error" + errors/log`.
+Reason: the response is fed verbatim to the LLM so it can read the error and explain/suggest
+a fix to the user. Use 4xx/5xx only for HTTP/system-level errors (see §4).
 
-**Giới hạn kích thước.** Toàn bộ JSON response được nhúng vào prompt LLM:
+**Size limit.** The whole JSON response is embedded into the LLM prompt:
 
-- Tổng response **< 50 KB**. Không nhúng waveform / raw vector / mảng điểm
-  theo thời gian — chỉ trả metric tổng hợp (gain, f_3db, overshoot, settling
-  time, peak, công suất...). Nếu cần trao đổi waveform đầy đủ, sẽ bàn API
-  riêng sau (tải file/URL), không nhét vào response này.
-- `log` cắt còn vài KB cuối (phần chứa lỗi/cảnh báo).
+- Total response **< 50 KB**. Do not embed waveforms / raw vectors / time-series point
+  arrays — return only aggregated metrics (gain, f_3db, overshoot, settling time, peak,
+  power, …). Full waveform exchange, if needed, goes through a separate API later
+  (file/URL download), not this response. *(See the opt-in waveforms extension in
+  [`integration-openclaw.md` §4.3](integration-openclaw.md).)*
+- `log` trimmed to the last few KB (the part that holds errors/warnings).
 
-## 4. Mã lỗi HTTP & hành vi client
+## 4. HTTP status codes & client behaviour
 
-Client (`app/tools/base.py`) xử lý như sau — server cần biết để chọn mã đúng:
+The client (`app/tools/base.py`) behaves as follows — the server must pick the right code:
 
-| Mã | Khi nào server trả | Client làm gì |
-|----|--------------------|----------------|
-| 200 | Đã thực thi mô phỏng (kể cả sim lỗi — `status:"error"`) | Đưa kết quả cho LLM đánh giá |
-| 400 | Request hỏng (thiếu `netlist`, JSON sai) | **Fail ngay, không retry**; 500 ký tự đầu của body hiển thị cho user |
-| 401 | Token sai/thiếu | Fail ngay, không retry |
-| 5xx | Lỗi nội bộ server | **Retry tối đa 2 lần**, backoff 2s rồi 4s |
+| Code | When the server returns it | What the client does |
+|------|----------------------------|----------------------|
+| 200 | Simulation executed (even a failed sim — `status:"error"`) | Hand the result to the LLM to assess |
+| 400 | Bad request (missing `netlist`, invalid JSON) | **Fail immediately, no retry**; show the first 500 chars of the body to the user |
+| 401 | Missing/invalid token | Fail immediately, no retry |
+| 5xx | Internal server error | **Retry up to 2 times**, backoff 2s then 4s |
 
-Body lỗi 4xx/5xx: `{"detail": "<mô tả ngắn, an toàn hiển thị cho user>"}`.
+Error body for 4xx/5xx: `{"detail": "<short message, safe to show the user>"}`.
 
-## 5. Yêu cầu vận hành
+## 5. Operational requirements
 
-- **Đồng bộ, trả lời trong ≤ 180 s** (timeout `SIM_TIMEOUT` của orchestrator,
-  chỉnh được qua env). Job dài hơn: tự cắt theo `options.max_runtime_s` hoặc
-  trả `status:"error"` với thông báo rõ; API async (submit + poll) nếu cần sẽ
-  là version sau.
-- **Chịu được retry.** Timeout/5xx bị client gọi lại tới 2 lần → một netlist
-  có thể được mô phỏng trùng. Mô phỏng vốn không có side effect nên thường
-  ổn; nếu server có ghi job/file thì phải tự xử lý trùng lặp.
-- **Concurrent ≥ 4 request** (nhiều thread chat chạy song song).
-- Không yêu cầu HTTPS trong mạng nội bộ docker; nếu publish ra ngoài thì bắt
-  buộc HTTPS + Bearer key.
+- **Synchronous, respond within ≤ 180 s** (the orchestrator's `SIM_TIMEOUT`, env-tunable).
+  Longer jobs: cap them via `options.max_runtime_s` or return `status:"error"` with a clear
+  message; an async API (submit + poll) would be a later version.
+- **Idempotent under retry.** Timeouts/5xx are retried up to 2 times by the client, so one
+  netlist may be simulated more than once. Simulation has no side effects, so this is usually
+  fine; if the server records jobs/files it must handle duplicates itself.
+- **Concurrency ≥ 4 requests** (multiple chat threads run in parallel).
+- HTTPS not required inside the internal Docker network; if published externally, HTTPS +
+  Bearer key are mandatory.
 
-## 6. Cách tự kiểm tra trước khi bàn giao
+## 6. Self-check before handover
 
 ```bash
-# 1. Happy path — phải ra status:"ok" với results.ac
+# 1. Happy path — must yield status:"ok" with results.ac
 curl -s -X POST http://<openclaw-host>:<port>/simulate -H 'Content-Type: application/json' -d '{
   "netlist": "* RC\nV1 in 0 AC 1\nR1 in out 1k\nC1 out 0 159n\n.ac dec 10 10 1Meg\n.end",
   "options": {}
 }'
 
-# 2. Netlist hỏng — phải ra HTTP 200 + status:"error" + errors khác rỗng
+# 2. Broken netlist — must yield HTTP 200 + status:"error" + non-empty errors
 curl -s -X POST http://<openclaw-host>:<port>/simulate -H 'Content-Type: application/json' \
   -d '{"netlist": "R1 in out\n.end"}'
 
-# 3. Request hỏng — phải ra HTTP 4xx
+# 3. Bad request — must yield HTTP 4xx
 curl -s -X POST http://<openclaw-host>:<port>/simulate -H 'Content-Type: application/json' -d '{}'
 ```
 
-Test tích hợp end-to-end với orchestrator:
+End-to-end integration test with the orchestrator:
 
 ```bash
-# trỏ orchestrator sang OpenClaw rồi restart
+# point the orchestrator at OpenClaw, then restart
 SIM_API_URL=http://<openclaw-host>:<port>/simulate \
-SIM_API_KEY=<key-nếu-có> \
+SIM_API_KEY=<key-if-any> \
 docker compose -f docker-compose.orchestrator.yml up -d
 
 curl -X POST localhost:8100/flow/start -H 'Content-Type: application/json' -d '{
   "user_id": "test",
   "flow_id": "evaluate_circuit",
-  "message": "Đánh giá mạch RC này",
+  "message": "Evaluate this RC circuit",
   "attachments": [{"name": "rc.cir", "content": "* RC\nV1 in 0 AC 1\nR1 in out 1k\nC1 out 0 159n\n.ac dec 10 10 1Meg\n.end"}]
 }'
 ```

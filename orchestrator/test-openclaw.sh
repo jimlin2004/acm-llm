@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Test tích hợp OpenClaw sim-server (docs/intergration-openclaw.md §7).
+# Test tích hợp OpenClaw sim-server (docs/integration-openclaw.md §7).
 #
 #   bash orchestrator/test-openclaw.sh [BASE_URL] [KEY]
 #
