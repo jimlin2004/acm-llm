@@ -288,9 +288,11 @@ def prepare(message: str, attachments: list[Attachment], params: dict) -> dict:
 register(FlowSpec(
     flow_id="evaluate_circuit",
     description=(
-        "Run a SPICE simulation of a circuit netlist (.cir file) on the "
+        "Run a SPICE simulation of a circuit netlist (.cir file) AS-IS on the "
         "simulation server and assess the results. Use when the user asks to "
-        "evaluate, check, analyze or simulate a circuit / netlist / .cir file."
+        "evaluate, check, analyze or simulate a circuit / netlist / .cir file "
+        "without changing it. For requests to modify/tune the circuit use "
+        "hermes_eval instead."
     ),
     params_schema={
         "type": "object",

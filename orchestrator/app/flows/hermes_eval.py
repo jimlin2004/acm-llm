@@ -47,8 +47,13 @@ for each request, which tools to use:
 
 - Call simulate_circuit when the request needs actual simulated behaviour
   (operating point, AC/DC/transient response, measured metrics, debugging a
-  circuit). The user's netlist is already loaded server-side — you do NOT pass
-  it; just choose the options.
+  circuit). With no arguments it simulates the user's loaded netlist as-is.
+- When the user asks to CHANGE the circuit (increase the gain, change a
+  component value, add a stage...), do NOT just re-simulate the original:
+  edit the netlist yourself and call simulate_circuit with the complete
+  modified netlist in the `netlist` argument. Simulate the original first
+  when a before/after comparison helps. Show the modified netlist in your
+  answer and report the measured effect of the change.
 - Call plot_waveforms after simulating (with waveforms) when a visual helps.
 - For purely conceptual questions that need no simulation, answer directly
   without calling a tool.
@@ -71,12 +76,21 @@ TOOLS = [
     {"type": "function", "function": {
         "name": "simulate_circuit",
         "description": (
-            "Run a SPICE simulation of the user's loaded netlist on the "
-            "simulation server and return metrics, logs and analyses. The "
-            "netlist is injected server-side — do not include it."),
+            "Run a SPICE simulation on the simulation server and return "
+            "metrics, logs and analyses. With no arguments it simulates the "
+            "user's loaded netlist as-is. To simulate a MODIFIED version "
+            "(e.g. the user asked to change a value or add a component), "
+            "pass the complete edited netlist in `netlist`."),
         "parameters": {
             "type": "object",
             "properties": {
+                "netlist": {
+                    "type": "string",
+                    "description": (
+                        "Complete SPICE netlist to simulate INSTEAD of the "
+                        "user's original (must include all lines up to .end). "
+                        "Omit to simulate the original."),
+                },
                 "include_waveforms": {
                     "type": "boolean",
                     "description": "also return waveform arrays so plot_waveforms can chart them",
@@ -97,7 +111,14 @@ TOOLS = [
 
 async def _exec_simulate(state: State, args: dict) -> str:
     opts = {"include_waveforms": bool(args.get("include_waveforms", True))}
-    sim = await simulator.simulate(state["netlist"], opts)
+    # The agent may pass an edited netlist (user asked for a modification);
+    # otherwise simulate the user's netlist as-is. A bare fragment without
+    # .end would silently error out server-side — reject it early instead.
+    netlist = (args.get("netlist") or "").strip()
+    if netlist and ".end" not in netlist.lower():
+        return ("Rejected: `netlist` must be a COMPLETE netlist including "
+                "the .end line. Send the whole edited file, not a fragment.")
+    sim = await simulator.simulate(netlist or state["netlist"], opts)
     # Keep the (large) waveform arrays out of the prompt; stash for plot_waveforms.
     waveforms = sim.pop("waveforms", None)
     if waveforms:
@@ -275,9 +296,11 @@ register(FlowSpec(
     description=(
         "Agentic circuit evaluation: a Hermes tool-calling model decides per "
         "request whether to run the SPICE simulator, plot waveforms, or answer "
-        "directly. Use as an alternative to evaluate_circuit when you want the "
-        "model (not a fixed pipeline) to choose which tools to run on a "
-        "circuit / netlist / .cir file."
+        "directly. It can also MODIFY the circuit on request (change component "
+        "values, increase gain, add a stage...) by editing the netlist and "
+        "re-simulating the edited version. Use for any request to change/tune "
+        "a circuit, and as an alternative to evaluate_circuit when the model "
+        "(not a fixed pipeline) should choose which tools to run."
     ),
     params_schema={
         "type": "object",

@@ -139,7 +139,7 @@ _MSG = {
         "en": "I am ACM Assistant — the circuit-design assistant of ACM Lab. "
               "I can:\n"
               "• Simulate SPICE netlists (attach a .cir or paste one) on "
-              "ngspice\n"
+              "OpenClaw/ngspice\n"
               "• Evaluate the results (gain, bandwidth, phase margin...) and "
               "plot Bode/transient charts\n"
               "• Migrate a netlist between PDKs (/migrate)\n"
@@ -147,13 +147,13 @@ _MSG = {
         "vi": "Tôi là ACM Assistant — trợ lý thiết kế mạch của ACM Lab. "
               "Tôi có thể:\n"
               "• Mô phỏng netlist SPICE (đính kèm .cir hoặc dán vào chat) "
-              "trên ngspice\n"
+              "trên OpenClaw/ngspice\n"
               "• Đánh giá kết quả (gain, băng thông, phase margin...) và vẽ "
               "biểu đồ Bode/transient\n"
               "• Migrate netlist giữa các PDK (/migrate)\n"
               "• Trả lời câu hỏi lý thuyết mạch analog/digital",
         "zh": "我是 ACM Assistant — ACM Lab 的電路設計助理。我可以：\n"
-              "• 在 ngspice 上模擬 SPICE netlist（附上 .cir 或直接"
+              "• 在 OpenClaw/ngspice 上模擬 SPICE netlist（附上 .cir 或直接"
               "貼上）\n"
               "• 評估結果（增益、頻寬、相位裕度…）並繪製 Bode/暫態圖\n"
               "• 在 PDK 之間遷移 netlist（/migrate）\n"
@@ -161,15 +161,15 @@ _MSG = {
     },
     "about": {
         "en": "ACM Assistant — ACM Lab's Telegram bot, powered by an LLM "
-              "fine-tuned for analog design plus a local ngspice "
+              "fine-tuned for analog design plus the OpenClaw (ngspice) "
               "simulation server. Purpose: evaluate, debug and migrate "
               "circuits right from Telegram. Feedback: /feedback",
         "vi": "ACM Assistant — bot Telegram của ACM Lab, chạy trên LLM "
-              "fine-tune cho thiết kế analog cùng sim server ngspice "
-              "chạy local. Mục đích: đánh giá, debug và migrate mạch ngay "
+              "fine-tune cho thiết kế analog cùng sim server OpenClaw "
+              "(ngspice). Mục đích: đánh giá, debug và migrate mạch ngay "
               "trong Telegram. Góp ý: /feedback",
         "zh": "ACM Assistant — ACM Lab 的 Telegram 機器人，由針對類比設計"
-              "微調的 LLM 與本機 ngspice 模擬伺服器驅動。目的：在 "
+              "微調的 LLM 與 OpenClaw（ngspice）模擬伺服器驅動。目的：在 "
               "Telegram 中直接評估、除錯與遷移電路。意見回饋：/feedback",
     },
     "feedback_ok": {
