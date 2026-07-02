@@ -2,7 +2,7 @@
 title: ACM Assistant (auto-route)
 author: acm-llm
 version: 0.4.2
-description: One model for every task. Each message is streamed from the orchestrator (POST /flow/stream, SSE), whose LLM router picks the right flow (e.g. circuit evaluation on the OpenClaw sim-server, with charts) or answers as plain chat. The answer appears token-by-token; the thinking phase shows as a live status. Attach a .cir file or paste a netlist to get a simulation. Open WebUI background tasks (title/tags/follow-ups) are answered by a small local model, never the orchestrator.
+description: One model for every task. Each message is streamed from the orchestrator (POST /flow/stream, SSE), whose LLM router picks the right flow (e.g. circuit evaluation on the ngspice sim-server, with charts) or answers as plain chat. The answer appears token-by-token; the thinking phase shows as a live status. Attach a .cir file or paste a netlist to get a simulation. Open WebUI background tasks (title/tags/follow-ups) are answered by a small local model, never the orchestrator.
 requirements:
 """
 
@@ -234,7 +234,8 @@ class Pipe:
                 async with session.post(f"{base}/flow/stream", json=payload) as resp:
                     if resp.status != 200:
                         raw = await resp.text()
-                        await status("Orchestrator trả lỗi", done=True)
+                        await status("Orchestrator trả lỗi" if vi
+                                     else "Orchestrator returned an error", done=True)
                         yield f"Orchestrator error HTTP {resp.status}:\n```\n{raw[:800]}\n```"
                         return
                     async for raw_line in resp.content:
@@ -251,14 +252,18 @@ class Pipe:
                         elif etype == "done":
                             break
         except asyncio.TimeoutError:
-            await status("Hết thời gian chờ", done=True)
-            yield (f"\n\n[Orchestrator không hoàn tất trong {self.valves.FLOW_TIMEOUT_S}s.]")
+            await status("Hết thời gian chờ" if vi else "Timed out", done=True)
+            yield (f"\n\n[Orchestrator không hoàn tất trong {self.valves.FLOW_TIMEOUT_S}s.]"
+                   if vi else
+                   f"\n\n[Orchestrator did not finish within {self.valves.FLOW_TIMEOUT_S}s.]")
             return
         except aiohttp.ClientError as e:
-            await status("Không kết nối được orchestrator", done=True)
-            yield f"Không kết nối được orchestrator ({base}): {e}"
+            await status("Không kết nối được orchestrator" if vi
+                         else "Could not reach the orchestrator", done=True)
+            yield (f"Không kết nối được orchestrator ({base}): {e}" if vi else
+                   f"Could not reach the orchestrator ({base}): {e}")
             return
 
         await status("Xong" if vi else "Done", done=True)
         if attachments and produced:  # a sim flow ran
-            yield "\n\n---\n*sim engine: OpenClaw/ngspice*"
+            yield "\n\n---\n*sim engine: ngspice*"
