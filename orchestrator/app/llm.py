@@ -29,18 +29,34 @@ async def complete(messages: list[dict], temperature: float = 0.2,
 
 async def chat(messages: list[dict], tools: list[dict], *,
                oai: AsyncOpenAI | None = None, model: str | None = None,
-               temperature: float = 0.2, max_tokens: int | None = None):
+               temperature: float = 0.2, max_tokens: int | None = None,
+               tool_choice: str = "auto"):
     """One tool-calling chat turn. Returns the raw assistant message, which may
     carry `.tool_calls` (the model's decision on which tool to run) and/or
-    `.content`. Caller drives the act/observe loop."""
-    resp = await (oai or client).chat.completions.create(
-        model=model or config.LLM_MODEL,
-        messages=messages,
-        tools=tools,
-        tool_choice="auto",
-        temperature=temperature,
-        max_tokens=max_tokens or config.LLM_MAX_TOKENS,
-    )
+    `.content`. Caller drives the act/observe loop.
+
+    tool_choice="required" forces the model to call a tool (vLLM guided
+    decoding); falls back to "auto" if the server rejects it."""
+    try:
+        resp = await (oai or client).chat.completions.create(
+            model=model or config.LLM_MODEL,
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            temperature=temperature,
+            max_tokens=max_tokens or config.LLM_MAX_TOKENS,
+        )
+    except Exception:
+        if tool_choice == "auto":
+            raise
+        resp = await (oai or client).chat.completions.create(
+            model=model or config.LLM_MODEL,
+            messages=messages,
+            tools=tools,
+            tool_choice="auto",
+            temperature=temperature,
+            max_tokens=max_tokens or config.LLM_MAX_TOKENS,
+        )
     return resp.choices[0].message
 
 

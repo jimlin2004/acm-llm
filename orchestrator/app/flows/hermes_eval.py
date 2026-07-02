@@ -57,6 +57,11 @@ for each request, which tools to use:
 - Call plot_waveforms after simulating (with waveforms) when a visual helps.
 - For purely conceptual questions that need no simulation, answer directly
   without calling a tool.
+- Simulation results are only valid within the turn they were produced:
+  NEVER reuse metrics from earlier turns and never estimate them yourself.
+  Any number you report must come from a simulate_circuit call made in THIS
+  turn. If the request concerns the circuit's behaviour or a modification,
+  you MUST simulate before answering.
 
 When you have gathered what you need, write the final assessment: briefly say
 what the circuit is, evaluate the key metrics / whether they look healthy, flag
@@ -181,11 +186,34 @@ async def _run_tools(state: State, emit=None) -> tuple[list[dict], str | None]:
     # tool JSON the fine-tune otherwise drifts back to English.
     lang_msg = {"role": "system",
                 "content": lang_directive(state.get("user_request", ""))}
-    for _ in range(MAX_STEPS):
+    called_any = nudged = False
+    for step in range(MAX_STEPS):
+        # A netlist request must be grounded in a fresh simulation, but with
+        # session history in context the fine-tune routinely skips tools and
+        # recites stale metrics (even when nudged) — so the FIRST turn forces
+        # a tool call outright; later turns decide freely.
+        force = "required" if (step == 0 and state.get("netlist")) else "auto"
         m = await llm.chat(messages + [lang_msg], TOOLS, oai=llm.hermes_client,
-                           model=config.HERMES_LLM_MODEL, temperature=0.2)
+                           model=config.HERMES_LLM_MODEL, temperature=0.2,
+                           tool_choice=force)
         if not m.tool_calls:
+            # The fine-tune sometimes answers a netlist request straight from
+            # session history (stale metrics, no charts). One deterministic
+            # nudge: with a netlist loaded, a first answer with no tool call
+            # is sent back for reconsideration before being accepted.
+            if not called_any and not nudged and state.get("netlist"):
+                nudged = True
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "You answered without running any simulation. If your "
+                        "answer cites or depends on circuit behaviour/metrics, "
+                        "call simulate_circuit now (pass the edited netlist if "
+                        "the user asked for a change). Answer directly only if "
+                        "the question is purely conceptual.")})
+                continue
             return messages, (m.content or "")
+        called_any = True
         messages.append(_assistant_dict(m))
         for tc in m.tool_calls:
             name = tc.function.name
@@ -209,6 +237,10 @@ async def _run_tools(state: State, emit=None) -> tuple[list[dict], str | None]:
 
 def _charts_suffix(state: State) -> str:
     """Chart images appended after the assessment (shared by both run paths)."""
+    # The agent sometimes simulates with waveforms but skips plot_waveforms —
+    # render them anyway so the user still gets the charts.
+    if state.get("waveforms") and not state.get("charts"):
+        state["charts"] = charts_tool.render(state["waveforms"])
     suffix = ""
     for c in state.get("charts", []):
         suffix += (f"\n\n**{c['title']}**\n\n"
