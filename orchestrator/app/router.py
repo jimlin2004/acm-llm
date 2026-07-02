@@ -13,6 +13,9 @@ its parameters from the message.
 Rules:
 - Pick exactly one flow_id from the list, or "chat" if no flow matches and the
   message is just a question/conversation.
+- When there is NO attachment and the message contains no netlist, general or
+  meta questions (about the assistant, its commands/capabilities, greetings,
+  concept questions) are ALWAYS "chat" — never a circuit flow.
 - Extract params strictly according to the flow's params schema. Never invent
   values the user did not provide.
 - Do NOT copy file/attachment contents into params — attachments are bound to

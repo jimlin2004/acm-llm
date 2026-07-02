@@ -14,12 +14,28 @@ ROUTER_LLM_BASE_URL = os.environ.get("ROUTER_LLM_BASE_URL") or LLM_BASE_URL
 ROUTER_LLM_API_KEY = os.environ.get("ROUTER_LLM_API_KEY") or LLM_API_KEY
 ROUTER_LLM_MODEL = os.environ.get("ROUTER_LLM_MODEL") or LLM_MODEL
 
-# Simulation server (OpenClaw — contract in ../sim-api.openapi.yaml).
-# Default points at the bundled mock until OpenClaw is live.
+# Hermes — separate local vLLM endpoint serving a tool-calling model, used by
+# the agentic `hermes_eval` flow (it classifies each request and decides which
+# tool to run). Must be a vLLM started with a Hermes tool-call parser. Falls
+# back to the main LLM so the flow still loads if the tier is not configured.
+HERMES_LLM_BASE_URL = os.environ.get("HERMES_LLM_BASE_URL") or LLM_BASE_URL
+HERMES_LLM_API_KEY = os.environ.get("HERMES_LLM_API_KEY") or LLM_API_KEY
+HERMES_LLM_MODEL = os.environ.get("HERMES_LLM_MODEL") or LLM_MODEL
+
+# Simulation server (contract in ../sim-api.openapi.yaml).
+# Default points at the bundled mock until a real sim server is configured.
 SIM_API_URL = os.environ.get("SIM_API_URL", "http://sim-mock:9000/simulate")
 SIM_API_KEY = os.environ.get("SIM_API_KEY", "")
 SIM_TIMEOUT = float(os.environ.get("SIM_TIMEOUT", "180"))
 SIM_RETRIES = int(os.environ.get("SIM_RETRIES", "1"))
+
+# migration_pipe (external PDK-migration workbench, thanglq). The migrate_circuit
+# flow calls its end-to-end /api/pipeline/run. dry_run stays on until real mode
+# (GPU/HSPICE) is verified; provider is "openai" or "local".
+MIGRATION_API_URL = os.environ.get("MIGRATION_API_URL", "http://host.docker.internal:5000")
+MIGRATION_DRY_RUN = os.environ.get("MIGRATION_DRY_RUN", "true").lower() != "false"
+MIGRATION_LLM_PROVIDER = os.environ.get("MIGRATION_LLM_PROVIDER", "openai")
+MIGRATION_TIMEOUT = float(os.environ.get("MIGRATION_TIMEOUT", "1200"))
 
 # Where checkpoints + thread metadata live (mounted volume)
 DATA_DIR = os.environ.get("DATA_DIR", "/data")

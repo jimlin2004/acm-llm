@@ -10,12 +10,16 @@ from . import config
 client = AsyncOpenAI(base_url=config.LLM_BASE_URL, api_key=config.LLM_API_KEY)
 fast_client = AsyncOpenAI(base_url=config.ROUTER_LLM_BASE_URL,
                           api_key=config.ROUTER_LLM_API_KEY)
+# Tool-calling model on its own vLLM endpoint (the hermes_eval agent flow).
+hermes_client = AsyncOpenAI(base_url=config.HERMES_LLM_BASE_URL,
+                            api_key=config.HERMES_LLM_API_KEY)
 
 
 async def complete(messages: list[dict], temperature: float = 0.2,
-                   max_tokens: int | None = None) -> str:
-    resp = await client.chat.completions.create(
-        model=config.LLM_MODEL,
+                   max_tokens: int | None = None,
+                   oai: AsyncOpenAI | None = None, model: str | None = None) -> str:
+    resp = await (oai or client).chat.completions.create(
+        model=model or config.LLM_MODEL,
         messages=messages,
         temperature=temperature,
         max_tokens=max_tokens or config.LLM_MAX_TOKENS,
@@ -23,18 +27,37 @@ async def complete(messages: list[dict], temperature: float = 0.2,
     return resp.choices[0].message.content or ""
 
 
+async def chat(messages: list[dict], tools: list[dict], *,
+               oai: AsyncOpenAI | None = None, model: str | None = None,
+               temperature: float = 0.2, max_tokens: int | None = None):
+    """One tool-calling chat turn. Returns the raw assistant message, which may
+    carry `.tool_calls` (the model's decision on which tool to run) and/or
+    `.content`. Caller drives the act/observe loop."""
+    resp = await (oai or client).chat.completions.create(
+        model=model or config.LLM_MODEL,
+        messages=messages,
+        tools=tools,
+        tool_choice="auto",
+        temperature=temperature,
+        max_tokens=max_tokens or config.LLM_MAX_TOKENS,
+    )
+    return resp.choices[0].message
+
+
 async def stream(messages: list[dict], temperature: float = 0.2,
                  max_tokens: int | None = None,
-                 include_reasoning: bool = False) -> AsyncIterator:
-    """Stream a chat completion from the main model.
+                 include_reasoning: bool = False,
+                 oai: AsyncOpenAI | None = None,
+                 model: str | None = None) -> AsyncIterator:
+    """Stream a chat completion.
 
     Default yields answer-content strings. include_reasoning=True yields
     ("reasoning", str) / ("content", str) tuples — vLLM exposes thinking tokens
     in a non-standard delta field whose name varies by build ("reasoning" here,
     "reasoning_content" elsewhere), so check both.
     """
-    s = await client.chat.completions.create(
-        model=config.LLM_MODEL,
+    s = await (oai or client).chat.completions.create(
+        model=model or config.LLM_MODEL,
         messages=messages,
         temperature=temperature,
         max_tokens=max_tokens or config.LLM_MAX_TOKENS,
@@ -58,13 +81,15 @@ async def stream(messages: list[dict], temperature: float = 0.2,
 
 
 async def stream_with_thinking(messages: list[dict], temperature: float = 0.2,
-                               max_tokens: int | None = None) -> AsyncIterator[str]:
+                               max_tokens: int | None = None,
+                               oai: AsyncOpenAI | None = None,
+                               model: str | None = None) -> AsyncIterator[str]:
     """Yield content deltas with the model's reasoning wrapped in
     <think>...</think>, so an Open WebUI client renders it as a collapsible
     "Thinking" block followed by the answer."""
     in_think = False
     async for kind, text in stream(messages, temperature, max_tokens,
-                                   include_reasoning=True):
+                                   include_reasoning=True, oai=oai, model=model):
         if kind == "reasoning":
             if not in_think:
                 yield "<think>"

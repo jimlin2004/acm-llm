@@ -6,6 +6,7 @@ GET  /flow/{thread_id}            current status + state
 GET  /flow?user_id=...            list a user's threads
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -19,6 +20,10 @@ from pydantic import BaseModel
 from . import config, llm, router
 from . import flows  # noqa: F401  — imports trigger flow registration
 from .engine import FlowEngine
+from .memory import ChatMemory
+from .openai_compat import router as openai_router
+from .line_webhook import router as line_router
+from .telegram_bot import poll_forever as telegram_poll
 from .registry import FLOWS, Attachment, MissingParams
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -33,12 +38,22 @@ async def lifespan(app: FastAPI):
         engine = FlowEngine(saver, os.path.join(config.DATA_DIR, "threads.db"))
         await engine.init()
         app.state.engine = engine
+        memory = ChatMemory(os.path.join(config.DATA_DIR, "chat_memory.db"))
+        await memory.init()
+        app.state.memory = memory
         log.info("flows registered: %s", list(FLOWS))
-        yield
-        await engine.close()
+        tg_task = asyncio.create_task(telegram_poll())
+        try:
+            yield
+        finally:
+            tg_task.cancel()
+            await engine.close()
+            await memory.close()
 
 
 app = FastAPI(title="ACM Orchestrator", lifespan=lifespan)
+app.include_router(openai_router)
+app.include_router(line_router)
 
 
 class AttachmentIn(BaseModel):
@@ -53,6 +68,8 @@ class StartRequest(BaseModel):
     flow_id: str | None = None   # set to skip the LLM router
     params: dict = {}
     wait: bool = True            # false -> return thread_id at once, poll GET /flow/{id}
+    use_memory: bool = False     # load/save per-user session history around the run
+    reset_session: bool = False  # start a fresh session before this turn (Telegram /start)
 
 
 class ResumeRequest(BaseModel):
@@ -64,7 +81,14 @@ class ResumeRequest(BaseModel):
 @app.post("/flow/start")
 async def flow_start(req: StartRequest):
     engine: FlowEngine = app.state.engine
+    memory: ChatMemory = app.state.memory
     attachments = [Attachment(a.name, a.content) for a in req.attachments]
+
+    # Session memory: a fresh session on request, then the recent turns are
+    # re-injected into every flow so follow-ups keep context.
+    if req.use_memory and req.reset_session:
+        await memory.new_session(req.user_id)
+    history = await memory.get_history(req.user_id) if req.use_memory else []
 
     flow_id, params = req.flow_id, dict(req.params)
     if flow_id is None:
@@ -75,19 +99,44 @@ async def flow_start(req: StartRequest):
 
     if flow_id == "chat":
         answer = await llm.complete(
-            [{"role": "user", "content": req.message}], temperature=0.6)
-        return {"thread_id": None, "status": "completed", "message": answer}
+            history + [{"role": "user", "content": req.message}], temperature=0.6)
+        result = {"thread_id": None, "status": "completed", "message": answer}
+    else:
+        spec = FLOWS.get(flow_id)
+        if spec is None:
+            raise HTTPException(404, f"unknown flow_id: {flow_id}")
+        try:
+            initial_state = spec.prepare(req.message, attachments, params)
+        except MissingParams as e:
+            # A router-guessed flow with no attachment usually means the
+            # router mistook a plain question for a circuit request — answer
+            # it as ordinary chat instead of demanding a netlist. A forced
+            # flow_id (e.g. /migrate) keeps the precise clarification.
+            if req.flow_id is not None or attachments:
+                return {"thread_id": None, "status": "clarify", "message": str(e)}
+            answer = await llm.complete(
+                history + [{"role": "user", "content": req.message}],
+                temperature=0.6)
+            result = {"thread_id": None, "status": "completed", "message": answer}
+        else:
+            initial_state["history"] = history
+            result = await engine.start(flow_id, req.user_id, initial_state,
+                                        wait=req.wait)
 
-    spec = FLOWS.get(flow_id)
-    if spec is None:
-        raise HTTPException(404, f"unknown flow_id: {flow_id}")
+    # Persist the turn only once we have a real answer (skip failed/awaiting).
+    if req.use_memory:
+        await memory.append(req.user_id, "user", req.message)
+        if result.get("status") == "completed" and result.get("message"):
+            await memory.append(req.user_id, "assistant", result["message"])
+    return result
 
-    try:
-        initial_state = spec.prepare(req.message, attachments, params)
-    except MissingParams as e:
-        return {"thread_id": None, "status": "clarify", "message": str(e)}
 
-    return await engine.start(flow_id, req.user_id, initial_state, wait=req.wait)
+@app.post("/session/reset")
+async def session_reset(req: StartRequest):
+    """Start a fresh conversation session for a user (Telegram /start)."""
+    memory: ChatMemory = app.state.memory
+    sid = await memory.new_session(req.user_id)
+    return {"ok": True, "session_id": sid}
 
 
 def _sse(obj: dict) -> str:
@@ -128,7 +177,15 @@ async def flow_stream(req: StartRequest):
         try:
             initial_state = spec.prepare(req.message, attachments, params)
         except MissingParams as e:
-            yield _sse({"type": "delta", "text": str(e)})
+            # Same fallback as /flow/start: router misroute of a plain
+            # question (no attachment) is answered as chat.
+            if req.flow_id is None and not attachments:
+                async for delta in llm.stream_with_thinking(
+                        [{"role": "user", "content": req.message}],
+                        temperature=0.6):
+                    yield _sse({"type": "delta", "text": delta})
+            else:
+                yield _sse({"type": "delta", "text": str(e)})
             yield _sse({"type": "done"})
             return
 
@@ -144,7 +201,7 @@ async def flow_stream(req: StartRequest):
         except Exception as e:
             log.exception("stream flow failed")
             yield _sse({"type": "delta",
-                        "text": f"\n\n[lỗi khi chạy flow: {type(e).__name__}: {e}]"})
+                        "text": f"\n\n[error while running flow: {type(e).__name__}: {e}]"})
         yield _sse({"type": "done"})
 
     return StreamingResponse(gen(), media_type="text/event-stream")
