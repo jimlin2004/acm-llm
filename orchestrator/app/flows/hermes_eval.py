@@ -24,7 +24,7 @@ from ..registry import Attachment, FlowSpec, MissingParams, register
 from ..tools import charts as charts_tool
 from ..tools import simulator
 # Shared with evaluate_circuit: same netlist file types + language selection.
-from .evaluate_circuit import NETLIST_EXTENSIONS, _pick
+from .evaluate_circuit import NETLIST_EXTENSIONS, _pick, lang_directive
 
 MAX_STEPS = 6  # tool rounds before we force the model to answer
 
@@ -152,8 +152,12 @@ async def _run_tools(state: State, emit=None) -> tuple[list[dict], str | None]:
         *(state.get("history") or []),
         {"role": "user", "content": _user_prompt(state)},
     ]
+    # Passed as the LAST message on every call: after a few rounds of English
+    # tool JSON the fine-tune otherwise drifts back to English.
+    lang_msg = {"role": "system",
+                "content": lang_directive(state.get("user_request", ""))}
     for _ in range(MAX_STEPS):
-        m = await llm.chat(messages, TOOLS, oai=llm.hermes_client,
+        m = await llm.chat(messages + [lang_msg], TOOLS, oai=llm.hermes_client,
                            model=config.HERMES_LLM_MODEL, temperature=0.2)
         if not m.tool_calls:
             return messages, (m.content or "")
@@ -173,7 +177,8 @@ async def _run_tools(state: State, emit=None) -> tuple[list[dict], str | None]:
                              "name": name, "content": result})
     # budget exhausted — ask for the answer with the tools turned off
     messages.append({"role": "system",
-                     "content": "Stop calling tools and write the final answer now."})
+                     "content": "Stop calling tools and write the final "
+                                "answer now. " + lang_msg["content"]})
     return messages, None
 
 
@@ -222,7 +227,8 @@ async def stream_run(state: State) -> AsyncIterator[dict]:
     # Re-issue the terminal turn as a stream (the loop left messages ending at
     # the tool results, so this regenerates the answer with tokens flowing).
     async for delta in llm.stream_with_thinking(
-            messages, temperature=0.3, oai=llm.hermes_client,
+            messages + [{"role": "system", "content": lang_directive(req)}],
+            temperature=0.3, oai=llm.hermes_client,
             model=config.HERMES_LLM_MODEL):
         yield {"type": "delta", "text": delta}
     suffix = _charts_suffix(state)

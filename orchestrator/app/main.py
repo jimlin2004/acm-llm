@@ -25,9 +25,20 @@ from .openai_compat import router as openai_router
 from .line_webhook import router as line_router
 from .telegram_bot import poll_forever as telegram_poll
 from .registry import FLOWS, Attachment, MissingParams
+from .flows.evaluate_circuit import lang_directive
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("orchestrator")
+
+
+def _chat_messages(message: str, history: list | None = None) -> list[dict]:
+    """Plain-chat prompt: identity + a hard reply-language directive (the
+    analog fine-tune defaults to English when left without a system prompt)."""
+    return ([{"role": "system",
+              "content": "You are ACM Assistant, a circuit-design assistant "
+                         "of ACM Lab. " + lang_directive(message)}]
+            + (history or [])
+            + [{"role": "user", "content": message}])
 
 
 @asynccontextmanager
@@ -99,7 +110,7 @@ async def flow_start(req: StartRequest):
 
     if flow_id == "chat":
         answer = await llm.complete(
-            history + [{"role": "user", "content": req.message}], temperature=0.6)
+            _chat_messages(req.message, history), temperature=0.6)
         result = {"thread_id": None, "status": "completed", "message": answer}
     else:
         spec = FLOWS.get(flow_id)
@@ -115,8 +126,7 @@ async def flow_start(req: StartRequest):
             if req.flow_id is not None or attachments:
                 return {"thread_id": None, "status": "clarify", "message": str(e)}
             answer = await llm.complete(
-                history + [{"role": "user", "content": req.message}],
-                temperature=0.6)
+                _chat_messages(req.message, history), temperature=0.6)
             result = {"thread_id": None, "status": "completed", "message": answer}
         else:
             initial_state["history"] = history
@@ -163,7 +173,7 @@ async def flow_stream(req: StartRequest):
     async def gen():
         if flow_id == "chat":
             async for delta in llm.stream_with_thinking(
-                    [{"role": "user", "content": req.message}], temperature=0.6):
+                    _chat_messages(req.message), temperature=0.6):
                 yield _sse({"type": "delta", "text": delta})
             yield _sse({"type": "done"})
             return
@@ -181,8 +191,7 @@ async def flow_stream(req: StartRequest):
             # question (no attachment) is answered as chat.
             if req.flow_id is None and not attachments:
                 async for delta in llm.stream_with_thinking(
-                        [{"role": "user", "content": req.message}],
-                        temperature=0.6):
+                        _chat_messages(req.message), temperature=0.6):
                     yield _sse({"type": "delta", "text": delta})
             else:
                 yield _sse({"type": "delta", "text": str(e)})
