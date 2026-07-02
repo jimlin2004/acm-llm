@@ -1,0 +1,17 @@
+services:
+  sim-server:
+    build: .
+    container_name: sim-server
+    ports:
+      # Bind to the Tailscale IP only — do not expose on LAN/public.
+      # Set TS_IP to the host's `tailscale ip -4` result.
+      - "${TS_IP:-0.0.0.0}:9000:9000"
+    environment:
+      SIM_API_KEY: ${SIM_API_KEY:-}
+      LOG_LEVEL: INFO
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/health').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
