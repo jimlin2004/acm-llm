@@ -61,6 +61,10 @@ about a specific aspect, focus on it.
 Language: reply in the SAME language the user is using in this conversation —
 mirror the user's language exactly. Do not switch to or default to another
 language.
+
+Never write image markdown or "[chart: ...]" placeholders yourself — rendered
+charts are attached automatically below your answer. Ignore such markers if
+they appear in earlier turns.
 """
 
 TOOLS = [

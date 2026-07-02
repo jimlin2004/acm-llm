@@ -158,6 +158,9 @@ and the output of a simulation run. Write an assessment for the user:
 - If the user asked about a specific aspect, focus on that.
 - Reply in the SAME language the user is using in this conversation — mirror
   the user's language exactly. Do not switch to or default to another language.
+- Never write image markdown, "[chart: ...]" placeholders, or a "⚠️ Lint"
+  notice yourself — charts and lint notices are attached automatically below
+  your answer. Ignore such markers if they appear in earlier turns.
 """
 
 

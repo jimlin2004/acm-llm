@@ -20,6 +20,11 @@ import aiosqlite
 # store the blob (it would bloat the DB and the re-injected prompt); keep only a
 # short placeholder so the model still knows a chart was shown.
 _DATA_IMG = re.compile(r"!\[([^\]]*)\]\(data:[^)]*\)")
+# The lint notice is machine-appended below every assessment (all languages
+# share the "⚠️ **Lint" header). Strip it from stored history: the model can't
+# tell it was auto-appended and starts parroting the block into its own prose,
+# duplicating it turn after turn. It is regenerated fresh on every run anyway.
+_LINT_BLOCK = re.compile(r"\n*---\n⚠️ \*\*Lint[^\n]*\n(?:- [^\n]*\n?)*")
 _MAX_CONTENT = 4000        # per-message cap kept in the store
 _MAX_TURNS = 16            # most recent turns re-injected as context
 _MAX_HISTORY_CHARS = 8000  # total char budget for the re-injected history
@@ -29,6 +34,7 @@ def _clean(text: str) -> str:
     text = _DATA_IMG.sub(
         lambda m: f"[chart: {m.group(1)}]" if m.group(1) else "[chart]",
         text or "")
+    text = _LINT_BLOCK.sub("\n", text)
     return text[:_MAX_CONTENT]
 
 
