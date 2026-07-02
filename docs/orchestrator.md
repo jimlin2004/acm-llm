@@ -6,7 +6,7 @@ the final result. The heavy work (circuit simulation, and later generation / opt
 is done by external APIs ("tools").
 
 > Status: **implemented and live.** The `evaluate_circuit` flow runs end-to-end against the
-> OpenClaw sim-server, streamed into Open WebUI. This doc describes the architecture, the
+> ngspice sim-server, streamed into Open WebUI. This doc describes the architecture, the
 > flow/tool/state contracts, and the public API. Sections marked *(future)* are not built yet.
 
 ---
@@ -53,7 +53,7 @@ Client / Open WebUI pipe
 └───────┬───────────────┬───────────────┬────────┘
         │ router LLM     │ main LLM      │ tool calls
         ▼                ▼               ▼
-   Ollama :11434     vLLM :8002      Sim server (OpenClaw /simulate
+   Ollama :11434     vLLM :8002      Sim server (ngspice /simulate
    qwen2.5:3b       qwen3.6-35b-a3b   over Tailscale; sim-mock fallback)
 ```
 
@@ -167,7 +167,7 @@ plain LLM answer when the message is not a business request.
 - Pass `flow_id` explicitly to **skip the LLM router**; omit it to let the router choose.
 - `wait: false` returns the `thread_id` immediately; poll `GET /flow/{id}` for the result.
 - Open WebUI uses **`/flow/stream`** so the answer appears token-by-token (the "thinking"
-  phase shows as a live status). See `webui-assets/openclaw_circuit_pipe.py`.
+  phase shows as a live status). See `webui-assets/acm_assistant_pipe.py`.
 
 > Chat UX mapping (Open WebUI): each incoming user message either **starts** a new flow or
 > **resumes** a paused one, looked up by the session's `thread_id`.
@@ -203,7 +203,7 @@ For each external API, the adapter captures:
 |---|---|
 | `name` | `simulate` |
 | `description` | Run a SPICE simulation on a netlist |
-| `endpoint` | `POST {SIM_API_URL}` (default OpenClaw `/simulate`) |
+| `endpoint` | `POST {SIM_API_URL}` (default `/simulate`) |
 | `auth` | `Authorization: Bearer {SIM_API_KEY}` (optional) |
 | `input schema` | `{ netlist: str, options?: {...} }` |
 | `output schema` | `{ status, engine, analyses_run, results, log, warnings, errors }` |
@@ -212,7 +212,7 @@ For each external API, the adapter captures:
 
 The full simulation contract lives in [`sim-api-spec.md`](sim-api-spec.md) /
 [`../orchestrator/sim-api.openapi.yaml`](../orchestrator/sim-api.openapi.yaml).
-The OpenClaw integration guide is [`integration-openclaw.md`](integration-openclaw.md).
+The (historical) OpenClaw integration guide is [`integration-openclaw.md`](integration-openclaw.md).
 
 ---
 
@@ -228,7 +228,7 @@ START
 analyze_netlist     # main LLM: read the netlist, note the analyses to run
   │
   ▼
-run_simulation      # tool: POST /simulate (OpenClaw), waveforms opt-in
+run_simulation      # tool: POST /simulate (sim server), waveforms opt-in
   │
   ▼
 evaluate            # main LLM: explain results; charts rendered from waveforms
@@ -316,7 +316,7 @@ docker compose -f docker-compose.orchestrator.yml up -d --build
 ```
 
 State lives in SQLite under the mounted `/data` volume — no external database required.
-Set `SIM_API_URL`/`SIM_API_KEY` in `.env` to point at OpenClaw; leave them unset to use the
+Set `SIM_API_URL`/`SIM_API_KEY` in `.env` to point at an external sim server; leave them unset to use the
 bundled `sim-mock`.
 
 ---

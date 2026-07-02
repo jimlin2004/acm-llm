@@ -1,21 +1,21 @@
 ###############################################################################
 # ACM LLM Lab – Docker Compose
 #
-# File này chỉ quản lý SearXNG. Các container còn lại của stack hiện chạy
-# NGOÀI compose (khởi động bằng docker run, đừng `docker compose down` chúng):
+# This file only manages SearXNG. The remaining containers of the stack run
+# OUTSIDE compose (started with docker run — do NOT `docker compose down` them):
 #
 #   qwen3-vl-32b  vllm/vllm-openai:latest, network bridge, port 8000
 #                 --model Qwen/Qwen3-VL-32B-Thinking-FP8 --served-model-name qwen3-vl-32b
 #                 --max-model-len 32768 --gpu-memory-utilization 0.85
-#                 --reasoning-parser qwen3   (chỉ GPU 1, DeviceIDs=["1"])
+#                 --reasoning-parser qwen3   (GPU 1 only, DeviceIDs=["1"])
 #   open-webui    ghcr.io/open-webui/open-webui:cuda, network bridge, port 3000→8080
 #                 OPENAI_API_BASE_URL=http://host.docker.internal:8000/v1
 #                 volume open-webui:/app/backend/data
-#   ollama        chạy trên host (systemd, *:11434) — model nhỏ qwen2.5:3b-instruct
-#                 làm intent router cho orchestrator (ROUTER_LLM_* trong .env)
+#   ollama        runs on the host (systemd, *:11434) — small model qwen2.5:3b-instruct
+#                 acting as the intent router for the orchestrator (ROUTER_LLM_* in .env)
 #
-# Orchestrator + sim-mock: xem docker-compose.orchestrator.yml.
-# Monitoring (grafana/prometheus/loki...): compose riêng ngoài repo này.
+# Orchestrator + sim-mock: see docker-compose.orchestrator.yml.
+# Monitoring (grafana/prometheus/loki...): separate compose outside this repo.
 #
 # Usage:  docker compose up -d searxng
 ###############################################################################
@@ -27,9 +27,9 @@ networks:
 services:
 
   # ──────────────────────────────────────────────────────────────
-  # SEARXNG  –  Private meta-search engine (web search cho Open WebUI)
+  # SEARXNG  –  Private meta-search engine (web search for Open WebUI)
   #    UI:   http://localhost:5050
-  #    Open WebUI gọi qua http://host.docker.internal:5050 (nó ở bridge net)
+  #    Open WebUI reaches it via http://host.docker.internal:5050 (it is on the bridge net)
   # ──────────────────────────────────────────────────────────────
   searxng:
     image: searxng/searxng:latest

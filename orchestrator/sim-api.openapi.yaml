@@ -1,19 +1,20 @@
 openapi: 3.1.0
 info:
-  title: OpenClaw Circuit Simulation API
+  title: Circuit Simulation API (sim-server)
   version: "1.0"
   description: |
-    API mà server mô phỏng OpenClaw phải publish để orchestrator (acm-llm)
-    gọi được. Contract phía client đã cố định trong `app/tools/simulator.py`
-    — OpenClaw triển khai đúng spec này thì chỉ cần đổi biến môi trường
-    `SIM_API_URL` là thay được mock, không sửa code orchestrator.
+    API the simulation server must publish so the orchestrator
+    (acm-llm) can call it. The client-side contract is fixed in
+    `app/tools/simulator.py` — if a sim server implements this spec exactly, the
+    mock can be swapped out just by changing the `SIM_API_URL` environment
+    variable, with no orchestrator code changes.
 
-    Xem docs/sim-api-spec.md để biết yêu cầu vận hành (timeout, retry, kích
-    thước response).
+    See docs/sim-api-spec.md for the operational requirements (timeout,
+    retry, response size).
 
 servers:
-  - url: http://openclaw:9000
-    description: server mô phỏng OpenClaw (đặt qua SIM_API_URL)
+  - url: http://sim-server:9000
+    description: simulation server (set via SIM_API_URL)
 
 security:
   - bearerAuth: []
@@ -22,11 +23,11 @@ paths:
   /simulate:
     post:
       operationId: simulate
-      summary: Chạy mô phỏng một netlist SPICE và trả kết quả (đồng bộ)
+      summary: Run a SPICE netlist simulation and return the results (synchronous)
       description: |
-        Nhận netlist SPICE, chạy các analysis khai báo trong netlist
-        (.op/.ac/.dc/.tran/.noise...), trả kết quả trong cùng một request.
-        Phải trả lời trong vòng SIM_TIMEOUT của client (mặc định 180 s).
+        Accepts a SPICE netlist, runs the analyses declared in the netlist
+        (.op/.ac/.dc/.tran/.noise...), and returns the results within the same
+        request. Must respond within the client's SIM_TIMEOUT (default 180 s).
       requestBody:
         required: true
         content:
@@ -36,27 +37,28 @@ paths:
       responses:
         "200":
           description: |
-            Mô phỏng đã được thực thi. Kể cả khi mạch lỗi (không hội tụ,
-            netlist sai cú pháp SPICE...) vẫn trả 200 với `status: "error"`
-            kèm `errors`/`log` — để LLM đọc được lỗi và giải thích cho user.
+            The simulation was executed. Even when the circuit fails (does not
+            converge, invalid SPICE syntax...) still return 200 with
+            `status: "error"` plus `errors`/`log` — so the LLM can read the
+            error and explain it to the user.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/SimResponse"
         "400":
-          description: Request sai định dạng (thiếu `netlist`, JSON hỏng). Client KHÔNG retry, message hiển thị cho user.
+          description: Malformed request (missing `netlist`, broken JSON). Client does NOT retry; the message is shown to the user.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/HttpError"
         "401":
-          description: Thiếu hoặc sai Bearer token. Client KHÔNG retry.
+          description: Missing or invalid Bearer token. Client does NOT retry.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/HttpError"
         "500":
-          description: Lỗi nội bộ server. Client retry tối đa 2 lần (backoff 2s/4s) — handler phải an toàn khi bị gọi lặp lại.
+          description: Internal server error. Client retries at most 2 times (backoff 2s/4s) — the handler must be safe to call repeatedly.
           content:
             application/json:
               schema:
@@ -68,8 +70,9 @@ components:
       type: http
       scheme: bearer
       description: |
-        `Authorization: Bearer <SIM_API_KEY>`. Client chỉ gửi header khi
-        SIM_API_KEY được cấu hình; nếu server không cần auth thì bỏ qua.
+        `Authorization: Bearer <SIM_API_KEY>`. The client only sends this
+        header when SIM_API_KEY is configured; if the server needs no auth,
+        it is omitted.
 
   schemas:
     SimRequest:
@@ -78,7 +81,7 @@ components:
       properties:
         netlist:
           type: string
-          description: Netlist SPICE đầy đủ (UTF-8), gồm cả các dòng .ac/.tran/.op/.end.
+          description: Complete SPICE netlist (UTF-8), including the .ac/.tran/.op/.end lines.
           examples:
             - |
               * RC low-pass filter
@@ -90,9 +93,10 @@ components:
         options:
           type: object
           description: |
-            Tuỳ chọn mô phỏng, mặc định {}. Server tự định nghĩa key và phải
-            bỏ qua key lạ (không được trả lỗi). Gợi ý chuẩn hoá:
-            `engine`, `temperature_c`, `corner`, `max_runtime_s`.
+            Simulation options, default {}. The server defines its own keys
+            and must ignore unknown keys (must not return an error).
+            Suggested conventions: `engine`, `temperature_c`, `corner`,
+            `max_runtime_s`.
           additionalProperties: true
           default: {}
           properties:
@@ -100,42 +104,43 @@ components:
               type: boolean
               default: false
               description: |
-                true → response có thêm trường `waveforms` (mảng x/y đã
-                decimate) để client tự vẽ biểu đồ. Mặc định tắt để giữ
-                response < 50 KB cho caller cũ.
+                true → the response also carries a `waveforms` field
+                (decimated x/y arrays) so the client can plot charts itself.
+                Off by default to keep the response < 50 KB for old callers.
             max_points:
               type: integer
               default: 2000
               minimum: 1
               maximum: 20000
-              description: Số điểm tối đa mỗi waveform (server decimate đều, luôn giữ điểm đầu/cuối).
+              description: Max points per waveform (the server decimates uniformly, always keeping the first/last points).
 
     SimResponse:
       type: object
       required: [status, results, log]
       description: |
-        Object này (trừ `waveforms`) được đưa nguyên văn vào prompt LLM —
-        chỉ trả metric tổng hợp trong `results`. Tổng kích thước nên < 50 KB
-        (`log` cắt còn vài KB cuối); khi `include_waveforms=true` budget nới
-        lên ~2 MB và client phải tự tách `waveforms` ra trước khi prompt LLM.
+        This object (except `waveforms`) is inserted verbatim into the LLM
+        prompt — return only aggregated metrics in `results`. Total size
+        should be < 50 KB (`log` trimmed to the last few KB); when
+        `include_waveforms=true` the budget stretches to ~2 MB and the client
+        must strip `waveforms` out before prompting the LLM.
       properties:
         status:
           type: string
           enum: [ok, error]
-          description: ok = mô phỏng chạy xong; error = chạy thất bại (chi tiết trong errors/log).
+          description: ok = the simulation completed; error = the run failed (details in errors/log).
         engine:
           type: string
-          description: Tên + version engine, ví dụ "ngspice-42".
+          description: Engine name + version, e.g. "ngspice-42".
         analyses_run:
           type: array
           items:
             type: string
-          description: Các analysis đã chạy, ví dụ ["op", "ac"].
+          description: The analyses that were run, e.g. ["op", "ac"].
         results:
           type: object
           description: |
-            Kết quả theo từng analysis. Key = tên analysis, value = object
-            các metric số đã tổng hợp. Trả {} khi status = error.
+            Results per analysis. Key = analysis name, value = object of
+            aggregated numeric metrics. Return {} when status = error.
           additionalProperties:
             type: object
             additionalProperties: true
@@ -145,7 +150,7 @@ components:
               tran: { v_out_peak: 1.23, settling_time_us: 4.5, overshoot_pct: 8.1 }
         log:
           type: string
-          description: Log simulator (đã cắt gọn) — phần quan trọng nhất khi status = error.
+          description: Simulator log (trimmed) — the most important part when status = error.
         warnings:
           type: array
           items:
@@ -155,16 +160,17 @@ components:
           type: array
           items:
             type: string
-          description: Bắt buộc khác rỗng khi status = error.
+          description: Must be non-empty when status = error.
           default: []
         waveforms:
           type: object
           description: |
-            Chỉ có khi request đặt `options.include_waveforms=true`. Key =
-            tên analysis (`ac`/`tran`/`dc`), value = dữ liệu x/y đã decimate
-            về `max_points` để client tự vẽ. Series theo analysis:
+            Only present when the request sets
+            `options.include_waveforms=true`. Key = analysis name
+            (`ac`/`tran`/`dc`), value = x/y data decimated to `max_points`
+            for the client to plot itself. Series per analysis:
             ac → gain_db + phase_deg (x = frequency Hz), tran → v_out
-            (x = time s), dc → v_out (x = sweep). op/noise không có waveform.
+            (x = time s), dc → v_out (x = sweep). op/noise have no waveform.
           additionalProperties:
             $ref: "#/components/schemas/Waveform"
 
@@ -174,27 +180,27 @@ components:
       properties:
         x_name:
           type: string
-          description: Tên trục X, ví dụ "frequency", "time", "sweep".
+          description: X-axis name, e.g. "frequency", "time", "sweep".
         x_unit:
           type: string
-          description: Đơn vị trục X, ví dụ "Hz", "s".
+          description: X-axis unit, e.g. "Hz", "s".
         x:
           type: array
           items:
             type: number
         series:
           type: object
-          description: Mỗi key là một đường (cùng độ dài với `x`).
+          description: Each key is one curve (same length as `x`).
           additionalProperties:
             type: array
             items:
               type: number
         points:
           type: integer
-          description: Số điểm sau decimation.
+          description: Number of points after decimation.
         truncated:
           type: boolean
-          description: true nếu dữ liệu gốc đã bị giảm mẫu về max_points.
+          description: true if the original data was downsampled to max_points.
 
     HttpError:
       type: object
@@ -202,4 +208,4 @@ components:
       properties:
         detail:
           type: string
-          description: Mô tả lỗi ngắn gọn, an toàn để hiển thị cho end-user.
+          description: Short error description, safe to show to the end-user.

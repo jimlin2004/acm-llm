@@ -1,9 +1,13 @@
 # Orchestrator
 
 Implementation of `docs/orchestrator.md`: Router (LLM) → Flow engine (LangGraph,
-durable checkpoints, human-in-the-loop) → Responder. First flow:
-**`evaluate_circuit`** — send a `.cir` netlist to the simulation server, then
-LLM-assess the results.
+durable checkpoints, human-in-the-loop) → Responder. Flows:
+- **`evaluate_circuit`** — fixed pipeline: send a `.cir` netlist to the
+  simulation server, then LLM-assess the results.
+- **`hermes_eval`** — agentic alternative: a Hermes tool-calling model
+  (separate vLLM, `HERMES_LLM_*`) classifies each request and decides which
+  tool to run (`simulate_circuit` / `plot_waveforms` / answer directly). Runs
+  on the same netlist so the two orchestration styles can be compared.
 
 Differences vs. the design doc, matching the live stack:
 - LLM calls go **directly to vLLM** (`host.docker.internal:8000/v1`, model
@@ -18,8 +22,8 @@ docker compose -f docker-compose.orchestrator.yml up -d --build
 ```
 
 Services: `orchestrator` on **:8100**, `sim-mock` (fake simulation server) on
-**:9000**. Point at the real simulator (**OpenClaw**, in development) by
-setting `SIM_API_URL` in `.env` — the API OpenClaw must publish is specified
+**:9000**. Point at a different simulator by
+setting `SIM_API_URL` in `.env` — the API it must publish is specified
 in [`docs/sim-api-spec.md`](../docs/sim-api-spec.md) (OpenAPI:
 [`sim-api.openapi.yaml`](sim-api.openapi.yaml)).
 

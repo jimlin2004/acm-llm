@@ -1,6 +1,6 @@
-"""Mock OpenClaw circuit-simulation server.
+"""Mock circuit-simulation server.
 
-Stands in for the real OpenClaw sim-server so the orchestrator can be tested
+Stands in for the real sim-server so the orchestrator can be tested
 end to end. Faithfully implements the published contract
 (docs/integration-openclaw.md / orchestrator/sim-api.openapi.yaml):
 
@@ -24,7 +24,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-app = FastAPI(title="Mock OpenClaw Simulation Server")
+app = FastAPI(title="Mock Simulation Server")
 
 y5ENGINE = "mock-spice-0.1"
 
@@ -136,7 +136,7 @@ def simulate(req: SimRequest):
 
 
 def _waveforms(results: dict, max_points: int) -> dict:
-    """Synthesize plausible waveforms matching the OpenClaw §4.3 format
+    """Synthesize plausible waveforms matching the sim-api §4.3 format
     (per-analysis {x_name, x_unit, x, series, points, truncated})."""
     n = min(max_points, 121)
     wf: dict = {}

@@ -1,3 +1,5 @@
+> **Historical (2026-06):** the OpenClaw partner integration described here was replaced on 2026-06-30 by the local `sim-server` container (same API contract). Kept for reference.
+
 # Integration Guide — OpenClaw sim-server
 
 For the **orchestrator team (acm-llm)** calling the OpenClaw simulation server. Source
@@ -41,7 +43,7 @@ SIM_API_URL=http://100.83.32.87:9000/simulate   # OpenClaw node Tailscale IP
 SIM_API_KEY=<key provided by the OpenClaw team>  # omit if the server runs no-auth
 ```
 
-Quick check before flipping over: `bash orchestrator/test-openclaw.sh` — runs health + the
+Quick check before flipping over: `bash orchestrator/test-sim-server.sh` — runs health + the
 4 self-check cases (§7) against the OpenClaw server over Tailscale.
 
 End-to-end smoke test:

@@ -1,8 +1,8 @@
-# Simulation API Spec — OpenClaw sim-server (handover to the OpenClaw team)
+# Simulation API Spec — sim-server contract
 
-Requirements for the **OpenClaw circuit simulation server**: publish exactly the API below
+Requirements for the **circuit simulation server**: publish exactly the API below
 and the orchestrator works against it immediately — you only point `SIM_API_URL` (and
-`SIM_API_KEY` if auth is on) at OpenClaw, with no changes to orchestrator code.
+`SIM_API_KEY` if auth is on) at the sim server, with no changes to orchestrator code.
 
 - Machine-readable spec (source of truth): [`../orchestrator/sim-api.openapi.yaml`](../orchestrator/sim-api.openapi.yaml)
 - Reference mock running in the stack: `orchestrator/mock_sim_server.py` (port 9000)
@@ -17,7 +17,7 @@ Authorization: Bearer <SIM_API_KEY>   # only sent when the orchestrator is confi
 ```
 
 The path does not have to be `/simulate` — the orchestrator calls the full URL in
-`SIM_API_URL` — but OpenClaw should keep `/simulate` for consistency with the mock.
+`SIM_API_URL` — but the server should keep `/simulate` for consistency with the mock.
 
 ## 2. Request
 
@@ -103,24 +103,24 @@ Error body for 4xx/5xx: `{"detail": "<short message, safe to show the user>"}`.
 
 ```bash
 # 1. Happy path — must yield status:"ok" with results.ac
-curl -s -X POST http://<openclaw-host>:<port>/simulate -H 'Content-Type: application/json' -d '{
+curl -s -X POST http://<sim-host>:<port>/simulate -H 'Content-Type: application/json' -d '{
   "netlist": "* RC\nV1 in 0 AC 1\nR1 in out 1k\nC1 out 0 159n\n.ac dec 10 10 1Meg\n.end",
   "options": {}
 }'
 
 # 2. Broken netlist — must yield HTTP 200 + status:"error" + non-empty errors
-curl -s -X POST http://<openclaw-host>:<port>/simulate -H 'Content-Type: application/json' \
+curl -s -X POST http://<sim-host>:<port>/simulate -H 'Content-Type: application/json' \
   -d '{"netlist": "R1 in out\n.end"}'
 
 # 3. Bad request — must yield HTTP 4xx
-curl -s -X POST http://<openclaw-host>:<port>/simulate -H 'Content-Type: application/json' -d '{}'
+curl -s -X POST http://<sim-host>:<port>/simulate -H 'Content-Type: application/json' -d '{}'
 ```
 
 End-to-end integration test with the orchestrator:
 
 ```bash
-# point the orchestrator at OpenClaw, then restart
-SIM_API_URL=http://<openclaw-host>:<port>/simulate \
+# point the orchestrator at the sim server, then restart
+SIM_API_URL=http://<sim-host>:<port>/simulate \
 SIM_API_KEY=<key-if-any> \
 docker compose -f docker-compose.orchestrator.yml up -d
 
