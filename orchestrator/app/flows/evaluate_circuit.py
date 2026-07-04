@@ -57,10 +57,10 @@ _LANG_NAME = {"en": "English", "vi": "Vietnamese", "zh": "Traditional Chinese"}
 def lang_directive(text: str) -> str:
     """Hard, explicit language instruction for the reply.
 
-    'Mirror the user's language' alone is too weak for the analog fine-tune:
-    once the context fills with English tool/simulation JSON it drifts back
-    to English. Detect the language in code and name it outright; callers
-    place this as the LAST message so it cannot be buried.
+    'Mirror the user's language' alone is too weak: once the context fills
+    with English tool/simulation JSON the model drifts back to English.
+    Detect the language in code and name it outright; callers place this
+    as the LAST message so it cannot be buried.
     """
     name = _LANG_NAME[_lang(text)]
     return (f"The user's language is {name}. Write ALL user-facing text of "
