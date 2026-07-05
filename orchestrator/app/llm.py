@@ -15,12 +15,25 @@ hermes_client = AsyncOpenAI(base_url=config.HERMES_LLM_BASE_URL,
                             api_key=config.HERMES_LLM_API_KEY)
 
 
+def _normalize(messages: list[dict]) -> list[dict]:
+    """Re-tag late system messages as user turns.
+
+    Qwen3.6's chat template rejects any system message that is not the very
+    first message (400 "System message must be at the beginning"), but several
+    callers deliberately append directives LAST for recency (the language pin,
+    the hermes tool nudges). A trailing user-role instruction keeps that
+    recency and is legal for every template.
+    """
+    return [{**m, "role": "user"} if m.get("role") == "system" and i > 0 else m
+            for i, m in enumerate(messages)]
+
+
 async def complete(messages: list[dict], temperature: float = 0.2,
                    max_tokens: int | None = None,
                    oai: AsyncOpenAI | None = None, model: str | None = None) -> str:
     resp = await (oai or client).chat.completions.create(
         model=model or config.LLM_MODEL,
-        messages=messages,
+        messages=_normalize(messages),
         temperature=temperature,
         max_tokens=max_tokens or config.LLM_MAX_TOKENS,
     )
@@ -40,7 +53,7 @@ async def chat(messages: list[dict], tools: list[dict], *,
     try:
         resp = await (oai or client).chat.completions.create(
             model=model or config.LLM_MODEL,
-            messages=messages,
+            messages=_normalize(messages),
             tools=tools,
             tool_choice=tool_choice,
             temperature=temperature,
@@ -51,7 +64,7 @@ async def chat(messages: list[dict], tools: list[dict], *,
             raise
         resp = await (oai or client).chat.completions.create(
             model=model or config.LLM_MODEL,
-            messages=messages,
+            messages=_normalize(messages),
             tools=tools,
             tool_choice="auto",
             temperature=temperature,
@@ -74,7 +87,7 @@ async def stream(messages: list[dict], temperature: float = 0.2,
     """
     s = await (oai or client).chat.completions.create(
         model=model or config.LLM_MODEL,
-        messages=messages,
+        messages=_normalize(messages),
         temperature=temperature,
         max_tokens=max_tokens or config.LLM_MAX_TOKENS,
         stream=True,
@@ -136,7 +149,7 @@ async def complete_json(messages: list[dict], schema: dict,
     try:
         resp = await use_client.chat.completions.create(
             model=model,
-            messages=messages,
+            messages=_normalize(messages),
             temperature=temperature,
             max_tokens=max_tokens or config.LLM_MAX_TOKENS,
             response_format={
@@ -158,9 +171,10 @@ async def complete_json(messages: list[dict], schema: dict,
         # guided decoding returned nothing usable (e.g. the model spent the
         # whole budget on reasoning) — retry once with prompt-only JSON
         text = await complete(
-            messages + [{"role": "system",
+            messages + [{"role": "user",
                          "content": "Reply with a single JSON object only, no prose."}],
             temperature=temperature,
+            max_tokens=max_tokens,
         )
         return _parse_json(text)
 
