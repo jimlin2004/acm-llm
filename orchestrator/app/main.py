@@ -17,7 +17,7 @@ from fastapi.responses import StreamingResponse
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from pydantic import BaseModel
 
-from . import config, llm, router
+from . import config, llm, router, vision
 from . import flows  # noqa: F401  — imports trigger flow registration
 from .engine import FlowEngine
 from .memory import ChatMemory
@@ -25,7 +25,7 @@ from .openai_compat import router as openai_router
 from .line_webhook import router as line_router
 from .telegram_bot import poll_forever as telegram_poll
 from .registry import FLOWS, Attachment, MissingParams
-from .flows.evaluate_circuit import lang_directive
+from .flows.evaluate_circuit import lang_directive, _pick
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("orchestrator")
@@ -33,10 +33,9 @@ log = logging.getLogger("orchestrator")
 
 def _chat_messages(message: str, history: list | None = None) -> list[dict]:
     """Plain-chat prompt: identity + a hard reply-language directive (the
-    analog fine-tune defaults to English when left without a system prompt)."""
+    model tends to default to English when left without a system prompt)."""
     return ([{"role": "system",
-              "content": "You are ACM Assistant, a circuit-design assistant "
-                         "of ACM Lab. " + lang_directive(message)}]
+              "content": config.ASSISTANT_IDENTITY + lang_directive(message)}]
             + (history or [])
             + [{"role": "user", "content": message}])
 
@@ -72,10 +71,17 @@ class AttachmentIn(BaseModel):
     content: str
 
 
+class ImageIn(BaseModel):
+    name: str = "photo.jpg"
+    b64: str                     # base64 image bytes (no data-URI prefix)
+    mime: str = "image/jpeg"
+
+
 class StartRequest(BaseModel):
     user_id: str = "anonymous"
     message: str
     attachments: list[AttachmentIn] = []
+    images: list[ImageIn] = []   # schematic photos for the vision path
     flow_id: str | None = None   # set to skip the LLM router
     params: dict = {}
     wait: bool = True            # false -> return thread_id at once, poll GET /flow/{id}
@@ -87,6 +93,60 @@ class ResumeRequest(BaseModel):
     decision: str                # approve | reject | edit
     feedback: str | None = None
     edited_artifact: dict | str | None = None
+
+
+async def _image_flow(req: "StartRequest", history: list) -> dict:
+    """Schematic-photo path: transcribe the image with the vision model and
+    run the normal evaluate_circuit flow on the result; an image that is not
+    a readable schematic gets a plain vision-chat answer instead."""
+    engine: FlowEngine = app.state.engine
+    images = [(i.b64, i.mime) for i in req.images]
+    extracted = await vision.netlist_from_image(req.message, images)
+    netlist = extracted["netlist"]
+    log.info("image flow: netlist=%s notes=%r",
+             bool(netlist), extracted["notes"][:120])
+    if not netlist:
+        # The fallback re-sends the same image — if extraction failed because
+        # vLLM rejected the image itself, this raises too. Answer with a clear
+        # notice instead of letting the request 500.
+        try:
+            answer = await vision.chat(req.message, images, history)
+        except Exception:
+            log.exception("vision chat fallback failed")
+            answer = _pick(
+                req.message,
+                en="Sorry, I couldn't process this image (it may be too "
+                   "large, corrupted, or in an unsupported format). Please "
+                   "try a clearer photo or paste the netlist as text.",
+                vi="Xin lỗi, tôi không xử lý được ảnh này (có thể ảnh quá "
+                   "lớn, bị hỏng hoặc sai định dạng). Bạn thử gửi ảnh rõ "
+                   "hơn hoặc dán netlist dạng text nhé.",
+                zh="抱歉，無法處理這張圖片（可能過大、損壞或格式不支援）。"
+                   "請改傳更清晰的照片，或直接貼上 netlist 文字。")
+        return {"thread_id": None, "status": "completed", "message": answer}
+
+    spec = FLOWS["evaluate_circuit"]
+    state = spec.prepare(req.message,
+                         [Attachment("from_image.cir", netlist)], {})
+    state["history"] = history
+    result = await engine.start("evaluate_circuit", req.user_id, state,
+                                wait=req.wait)
+    # Always expose the transcription — async (wait=false) callers get no
+    # message to prepend to, but still need the netlist to verify against.
+    result["transcribed_netlist"] = netlist
+    # Show the transcription so the user can catch reading mistakes — the
+    # netlist is the model's interpretation of the picture, not ground truth.
+    if result.get("status") == "completed" and result.get("message"):
+        header = _pick(
+            req.message,
+            en="**Netlist transcribed from your image** (please verify):",
+            vi="**Netlist trích từ ảnh bạn gửi** (hãy kiểm tra lại):",
+            zh="**已從您的圖片轉錄出 netlist**（請確認）：")
+        block = f"{header}\n```\n{netlist}\n```\n"
+        if extracted["notes"]:
+            block += f"_{extracted['notes']}_\n"
+        result["message"] = block + "\n" + result["message"]
+    return result
 
 
 @app.post("/flow/start")
@@ -102,13 +162,17 @@ async def flow_start(req: StartRequest):
     history = await memory.get_history(req.user_id) if req.use_memory else []
 
     flow_id, params = req.flow_id, dict(req.params)
-    if flow_id is None:
+    if flow_id is None and not req.images:
         routed = await router.route(req.message, [a.name for a in attachments])
         flow_id = routed["flow_id"]
         params = {**routed["params"], **params}
         log.info("routed to flow=%s params=%s", flow_id, list(params))
 
-    if flow_id == "chat":
+    # Photos take the vision path only when no flow was forced — an explicit
+    # flow_id (e.g. Telegram "/migrate" caption) keeps its meaning.
+    if flow_id is None:
+        result = await _image_flow(req, history)
+    elif flow_id == "chat":
         answer = await llm.complete(
             _chat_messages(req.message, history), temperature=0.6)
         result = {"thread_id": None, "status": "completed", "message": answer}
@@ -164,13 +228,29 @@ async def flow_stream(req: StartRequest):
     """
     attachments = [Attachment(a.name, a.content) for a in req.attachments]
     flow_id, params = req.flow_id, dict(req.params)
-    if flow_id is None:
+    if flow_id is None and not req.images:
         routed = await router.route(req.message, [a.name for a in attachments])
         flow_id = routed["flow_id"]
         params = {**routed["params"], **params}
         log.info("routed to flow=%s params=%s", flow_id, list(params))
 
     async def gen():
+        # Same vision path as /flow/start, minus token streaming (the image
+        # flow runs to completion) — images must not be silently dropped here.
+        if flow_id is None:
+            req.wait = True
+            try:
+                result = await _image_flow(req, [])
+                yield _sse({"type": "delta",
+                            "text": result.get("message") or ""})
+            except Exception as e:
+                log.exception("stream image flow failed")
+                yield _sse({"type": "delta",
+                            "text": f"[error while running the image flow: "
+                                    f"{type(e).__name__}: {e}]"})
+            yield _sse({"type": "done"})
+            return
+
         if flow_id == "chat":
             async for delta in llm.stream_with_thinking(
                     _chat_messages(req.message), temperature=0.6):

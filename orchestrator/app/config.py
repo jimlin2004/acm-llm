@@ -39,3 +39,8 @@ MIGRATION_TIMEOUT = float(os.environ.get("MIGRATION_TIMEOUT", "1200"))
 
 # Where checkpoints + thread metadata live (mounted volume)
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
+
+# Shared assistant persona — every chat-style prompt (text or vision) must use
+# the same identity so replies don't drift between paths.
+ASSISTANT_IDENTITY = ("You are ACM Assistant, a circuit-design assistant "
+                      "of ACM Lab. ")

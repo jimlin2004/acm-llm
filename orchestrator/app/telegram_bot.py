@@ -16,6 +16,10 @@ with a `caption` instead of `text`, so we download the file via getFile and
 hand its content to the flow as an attachment (mirrors openai_compat.py,
 which reads netlists the flows expect from `attachments`).
 
+Photos: a schematic photo is downloaded the same way and passed base64 in
+`images` — the orchestrator's vision path transcribes it into a netlist and
+runs evaluate_circuit (or answers as vision chat if it isn't a schematic).
+
 Env: TELEGRAM_BOT_TOKEN (from @BotFather).
 """
 
@@ -140,6 +144,8 @@ _MSG = {
               "I can:\n"
               "• Simulate SPICE netlists (attach a .cir or paste one) on "
               "ngspice\n"
+              "• Read a schematic photo, transcribe it into a netlist and "
+              "analyze it\n"
               "• Evaluate the results (gain, bandwidth, phase margin...) and "
               "plot Bode/transient charts\n"
               "• Migrate a netlist between PDKs (/migrate)\n"
@@ -148,6 +154,7 @@ _MSG = {
               "Tôi có thể:\n"
               "• Mô phỏng netlist SPICE (đính kèm .cir hoặc dán vào chat) "
               "trên ngspice\n"
+              "• Đọc ảnh sơ đồ mạch, trích netlist và phân tích\n"
               "• Đánh giá kết quả (gain, băng thông, phase margin...) và vẽ "
               "biểu đồ Bode/transient\n"
               "• Migrate netlist giữa các PDK (/migrate)\n"
@@ -155,22 +162,23 @@ _MSG = {
         "zh": "我是 ACM Assistant — ACM Lab 的電路設計助理。我可以：\n"
               "• 在 ngspice 上模擬 SPICE netlist（附上 .cir 或直接"
               "貼上）\n"
+              "• 讀取電路圖照片，轉錄成 netlist 並分析\n"
               "• 評估結果（增益、頻寬、相位裕度…）並繪製 Bode/暫態圖\n"
               "• 在 PDK 之間遷移 netlist（/migrate）\n"
               "• 回答類比/數位電路理論問題",
     },
     "about": {
-        "en": "ACM Assistant — ACM Lab's Telegram bot, powered by an LLM "
-              "fine-tuned for analog design plus a local ngspice "
-              "simulation server. Purpose: evaluate, debug and migrate "
-              "circuits right from Telegram. Feedback: /feedback",
+        "en": "ACM Assistant — ACM Lab's Telegram bot, powered by a local "
+              "LLM plus a local ngspice simulation server. Purpose: "
+              "evaluate, debug and migrate circuits right from Telegram. "
+              "Feedback: /feedback",
         "vi": "ACM Assistant — bot Telegram của ACM Lab, chạy trên LLM "
-              "fine-tune cho thiết kế analog cùng sim server ngspice "
-              "chạy local. Mục đích: đánh giá, debug và migrate mạch ngay "
-              "trong Telegram. Góp ý: /feedback",
-        "zh": "ACM Assistant — ACM Lab 的 Telegram 機器人，由針對類比設計"
-              "微調的 LLM 與本機 ngspice 模擬伺服器驅動。目的：在 "
-              "Telegram 中直接評估、除錯與遷移電路。意見回饋：/feedback",
+              "local cùng sim server ngspice chạy local. Mục đích: đánh "
+              "giá, debug và migrate mạch ngay trong Telegram. Góp ý: "
+              "/feedback",
+        "zh": "ACM Assistant — ACM Lab 的 Telegram 機器人，由本機 LLM 與"
+              "本機 ngspice 模擬伺服器驅動。目的：在 Telegram 中直接評估、"
+              "除錯與遷移電路。意見回饋：/feedback",
     },
     "feedback_ok": {
         "en": "Thanks! Your feedback has been recorded.",
@@ -191,6 +199,13 @@ _MSG = {
         "en": "No task is currently running.",
         "vi": "Không có tác vụ nào đang chạy.",
         "zh": "目前沒有進行中的任務。",
+    },
+    "photo_failed": {
+        "en": "I couldn't download your image from Telegram. "
+              "Please try sending it again.",
+        "vi": "Tôi không tải được ảnh của bạn từ Telegram. "
+              "Vui lòng thử gửi lại.",
+        "zh": "無法從 Telegram 下載您的圖片，請重新傳送一次。",
     },
 }
 
@@ -265,6 +280,27 @@ def _extract_netlist(text: str):
     return None
 
 
+async def _fetch_file(client: httpx.AsyncClient, file_id: str):
+    """getFile + download of one Telegram file.
+
+    Returns (raw_bytes, file_path) or None on any failure (logged).
+    """
+    try:
+        gf = await client.get(f"{API}/getFile", params={"file_id": file_id})
+        file_path = ((gf.json().get("result") or {}).get("file_path"))
+        if not file_path:
+            log.error("getFile returned no file_path: %s", gf.text[:300])
+            return None
+        fr = await client.get(f"{FILE_API}/{file_path}")
+        if fr.status_code >= 300:
+            log.error("file download failed %s: %s", fr.status_code, fr.text[:200])
+            return None
+        return fr.content, file_path
+    except Exception:
+        log.exception("telegram file download failed")
+        return None
+
+
 async def _download_document(client: httpx.AsyncClient, doc: dict):
     """Fetch an uploaded document's text via getFile + file download.
 
@@ -278,21 +314,37 @@ async def _download_document(client: httpx.AsyncClient, doc: dict):
     file_id = doc.get("file_id")
     if not file_id:
         return None
-    try:
-        gf = await client.get(f"{API}/getFile", params={"file_id": file_id})
-        file_path = ((gf.json().get("result") or {}).get("file_path"))
-        if not file_path:
-            log.error("getFile returned no file_path: %s", gf.text[:300])
-            return None
-        fr = await client.get(f"{FILE_API}/{file_path}")
-        if fr.status_code >= 300:
-            log.error("file download failed %s: %s", fr.status_code, fr.text[:200])
-            return None
-        content = fr.content.decode("utf-8", errors="replace")
-        return name, content
-    except Exception:
-        log.exception("document download failed")
+    got = await _fetch_file(client, file_id)
+    if got is None:
         return None
+    return name, got[0].decode("utf-8", errors="replace")
+
+
+_MAX_PHOTO_BYTES = 10 * 1024 * 1024  # Telegram photo renditions stay well under
+
+
+async def _download_photo(client: httpx.AsyncClient, photos: list[dict]):
+    """Fetch a Telegram photo as base64, preferring the largest rendition.
+
+    `photos` is Telegram's PhotoSize array (sorted small -> large). A failed
+    or oversized rendition falls back to the next smaller one. Telegram
+    re-encodes photos as JPEG. Returns {"name", "b64", "mime"} or None.
+    """
+    for p in reversed(photos):
+        if p.get("file_size") and p["file_size"] > _MAX_PHOTO_BYTES:
+            continue
+        if not p.get("file_id"):
+            continue
+        got = await _fetch_file(client, p["file_id"])
+        if got is None:
+            continue
+        raw, file_path = got
+        if len(raw) > _MAX_PHOTO_BYTES:  # file_size was absent or wrong
+            continue
+        return {"name": os.path.basename(file_path) or "photo.jpg",
+                "b64": base64.b64encode(raw).decode(),
+                "mime": "image/jpeg"}
+    return None
 
 
 def _split_images(text: str):
@@ -407,19 +459,29 @@ async def _start_session(client: httpx.AsyncClient, chat_id: int, user_id: int):
 
 
 async def _run_and_reply(client: httpx.AsyncClient, chat_id: int,
-                         user_id: int, text: str, attachment=None):
-    log.info("tg in chat_id=%s from=%s attach=%s text=%r",
-             chat_id, user_id, bool(attachment), (text or "")[:120])
+                         user_id: int, text: str, attachment=None,
+                         photos=None):
+    log.info("tg in chat_id=%s from=%s attach=%s photo=%s text=%r",
+             chat_id, user_id, bool(attachment), bool(photos),
+             (text or "")[:120])
     # "typing..." indicator so the user sees the bot is working on it.
     typing = asyncio.create_task(_typing_loop(client, chat_id))
     try:
         text = text or ""
         if text.strip():                              # remember this chat's language
             _chat_lang[chat_id] = _detect_lang(text)
-        # No caption but a netlist file was uploaded: route the analysis prompt
-        # in the language this chat has been using, so the reply follows the
-        # current conversation instead of a forced default.
-        if not text.strip() and attachment is not None:
+        # Download the photo here, inside the per-chat task — doing it in the
+        # dispatch loop would stall every other chat's updates.
+        image = None
+        if photos:
+            image = await _download_photo(client, photos)
+            if image is None:
+                await _send(client, chat_id, _msg(chat_id, "photo_failed"))
+                return
+        # No caption but a netlist file / schematic photo was uploaded: route
+        # the analysis prompt in the language this chat has been using, so the
+        # reply follows the current conversation instead of a forced default.
+        if not text.strip() and (attachment is not None or image is not None):
             text = _ANALYZE_PROMPT[_chat_lang.get(chat_id, "en")]
         # Multi-turn memory: history is kept server-side per chat, scoped to the
         # session (reset by /start), and re-injected into whichever flow runs.
@@ -427,6 +489,8 @@ async def _run_and_reply(client: httpx.AsyncClient, chat_id: int,
                      "use_memory": True}
         if text.lstrip().startswith("/migrate"):
             flow_body["flow_id"] = "migrate_circuit"
+        if image is not None:                         # schematic photo
+            flow_body["images"] = [image]
         if attachment is not None:                    # uploaded .cir document
             flow_body["attachments"] = [attachment]
         else:                                         # or a netlist pasted inline
@@ -505,6 +569,13 @@ async def poll_forever():
                     if first.startswith("/") and _detect_lang(text) != "en":
                         _chat_lang[chat_id] = _detect_lang(text)
 
+                    # A photo's caption is a prompt, not a command: media
+                    # messages always take the media path, otherwise the
+                    # attached image would be silently dropped by a command
+                    # branch's `continue`.
+                    if msg.get("photo"):
+                        first = ""
+
                     # /start, /new and /reset reset the session.
                     if first in ("/start", "/new", "/reset"):
                         asyncio.create_task(
@@ -545,7 +616,8 @@ async def poll_forever():
                     # circuit flow and answer "no netlist found") — reply with
                     # a command hint instead.
                     if (first.startswith("/") and first != "/migrate"
-                            and not msg.get("document")):
+                            and not msg.get("document")
+                            and not msg.get("photo")):
                         asyncio.create_task(_send(
                             client, chat_id,
                             _msg(chat_id, "unknown_cmd", cmd=first)))
@@ -561,15 +633,27 @@ async def poll_forever():
                             if got:
                                 attachment = {"name": got[0], "content": got[1]}
 
-                    if text.strip() or attachment is not None:
+                    # A schematic photo: hand the PhotoSize list to the
+                    # per-chat task; it downloads there and reports failures
+                    # itself, so the dispatch loop is never blocked.
+                    photos = (msg.get("photo")
+                              if attachment is None else None)
+
+                    if text.strip() or attachment is not None or photos:
                         t = asyncio.create_task(
                             _run_and_reply(client, chat_id, user_id,
-                                           text, attachment))
+                                           text, attachment, photos))
                         _running[chat_id] = t   # /cancel targets this task
                         t.add_done_callback(
                             lambda fut, c=chat_id:
                             _running.pop(c, None)
                             if _running.get(c) is fut else None)
+                    else:
+                        # Anything else (sticker, voice, unsupported doc...)
+                        # must at least leave a trace in the log.
+                        log.info("tg in chat_id=%s from=%s unhandled message"
+                                 " keys=%s", chat_id, user_id,
+                                 sorted(msg.keys()))
             except asyncio.CancelledError:
                 raise
             except Exception:
