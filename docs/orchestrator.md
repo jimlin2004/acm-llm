@@ -361,8 +361,12 @@ In Grafana Explore (Loki): `{container="orchestrator"} |= "\"type\": \"flow\"" |
 - External API keys (e.g. `SIM_API_KEY`) live in the orchestrator's `.env`, **never**
   passed to the LLM or to clients.
 - Validate and sanitize all router-extracted params before they reach an API.
-- The orchestrator itself is only reachable on `app-net` / `host.docker.internal`; it is not
-  published to the public internet. vLLM (`:8002`) has no auth — do not expose it directly.
+- Host port `8100` binds **only** to `127.0.0.1` and the docker bridge gateway
+  (`172.17.0.1`, for Open WebUI) — the LAN cannot reach the unauthenticated API.
+  vLLM (`:8002`) has no auth — do not expose it directly.
+- Abuse guards: global `MAX_CONCURRENT_FLOWS` cap (busy replies + metrics), Telegram
+  per-chat serialization, rate limit and optional `TELEGRAM_ALLOWED_CHAT_IDS` allowlist.
+  See [`hardening-plan.md`](hardening-plan.md).
 
 ---
 

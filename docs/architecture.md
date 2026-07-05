@@ -18,7 +18,7 @@ contract see [`sim-api-spec.md`](sim-api-spec.md).
 |---|---|---|---|
 | **vLLM** `qwen3.6-35b-a3b` | container, GPU 1 | host `8002` | Main LLM (Qwen3.6-35B-A3B-FP8): vision, reasoning, tool calling (`--tool-call-parser qwen3_xml`), 131k ctx. OpenAI-compatible, **no auth**. |
 | **Ollama** `qwen2.5:3b-instruct` | host (systemd) | `11434` | Small/fast model: orchestrator intent router + Open WebUI background tasks (title/tags/follow-ups). |
-| **Orchestrator** | container, `app-net` | host `8100`→`8000` | Router + LangGraph flows + SQLite checkpoints. Hosts the **Telegram bot** (long-poll task) and the **LINE webhook** in-process. Calls the LLM and the sim server. |
+| **Orchestrator** | container, `app-net` | `127.0.0.1`+`172.17.0.1` `:8100`→`8000` | Router + LangGraph flows + SQLite checkpoints. Hosts the **Telegram bot** (long-poll task) and the **LINE webhook** in-process. Calls the LLM and the sim server. Not LAN-reachable (no auth); guards per [`hardening-plan.md`](hardening-plan.md). |
 | **sim-server** | container, `app-net` | `127.0.0.1:9000` | Local ngspice circuit simulation (`POST /simulate`, Bearer auth). Replaced the external OpenClaw node on 2026-06-30. |
 | **Open WebUI** | container, bridge net | internal `8080`→host `3010` | Chat UI. The **"ACM Assistant"** model is a pipe to the orchestrator. |
 | **Caddy** `caddy-proxy` | host net | `:3000`, `:8081` | `:3000` fronts Open WebUI. `:8081` is the authenticated **LLM gateway** (shared Bearer key → vLLM) for external OpenAI-compatible callers. See [`llm-api-access.md`](llm-api-access.md). |
@@ -91,5 +91,7 @@ Any API client ─────────────────────�
 | `docker-compose.orchestrator.yml` | Orchestrator + sim-server. |
 | `.env` | LLM / router / sim / bot endpoints and keys (not committed). |
 
-Operational hardening (rate limiting, auth on `:8100`, tracing, dashboards) is planned but
-not yet implemented — see [`hardening-plan.md`](hardening-plan.md).
+Operational hardening (rate limiting, port lockdown, access tracing, Prometheus metrics +
+the `ACM Orchestrator` Grafana dashboard) is implemented — see
+[`hardening-plan.md`](hardening-plan.md) for what each guard does; Phase 4 (metered
+virtual keys via LiteLLM) remains optional/unbuilt.
