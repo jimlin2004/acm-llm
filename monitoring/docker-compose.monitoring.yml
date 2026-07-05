@@ -40,7 +40,9 @@ services:
     restart: unless-stopped
     networks:
       - monitoring-net
-      - app-net           # needed to reach ollama:11434
+      - app-net           # needed to reach ollama:11434 + orchestrator:8000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # scrape vLLM on host port 8002
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro

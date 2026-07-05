@@ -42,10 +42,22 @@ scrape_configs:
         replacement: acm-llm-host
 
   # vLLM inference engine metrics (request count, token throughput, KV cache, latency)
+  # The vLLM container publishes host port 8002; reached via the host gateway
+  # (extra_hosts on the prometheus service).
   - job_name: vllm
     static_configs:
-      - targets: ['vllm:8000']
+      - targets: ['host.docker.internal:8002']
     metrics_path: /metrics
     relabel_configs:
       - target_label: instance
         replacement: vllm
+
+  # Orchestrator flow/LLM metrics (acm_flows_*, acm_llm_*) — same app-net,
+  # scraped by service name. See orchestrator/app/metrics.py.
+  - job_name: orchestrator
+    static_configs:
+      - targets: ['orchestrator:8000']
+    metrics_path: /metrics
+    relabel_configs:
+      - target_label: instance
+        replacement: orchestrator
