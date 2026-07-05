@@ -1,11 +1,17 @@
-"""Thin LLM client over the OpenAI-compatible vLLM endpoint."""
+"""Thin LLM client over the OpenAI-compatible vLLM endpoint.
+
+Every call is timed and written to the access log (see access_log.py):
+model, duration, TTFT + thinking time (streamed calls), prompt/completion
+tokens and tokens/s, attributed to the requesting channel/user.
+"""
 
 import json
+import time
 from typing import AsyncIterator
 
 from openai import AsyncOpenAI
 
-from . import config
+from . import access_log, config
 
 client = AsyncOpenAI(base_url=config.LLM_BASE_URL, api_key=config.LLM_API_KEY)
 fast_client = AsyncOpenAI(base_url=config.ROUTER_LLM_BASE_URL,
@@ -28,15 +34,46 @@ def _normalize(messages: list[dict]) -> list[dict]:
             for i, m in enumerate(messages)]
 
 
+def _reasoning_of(message) -> str:
+    """vLLM exposes thinking text in a non-standard field whose name varies
+    by build — check both spellings (also in model_extra)."""
+    extra = message.model_extra or {}
+    return (getattr(message, "reasoning", None)
+            or getattr(message, "reasoning_content", None)
+            or extra.get("reasoning") or extra.get("reasoning_content") or "")
+
+
+def _log_buffered(kind: str, model: str, t0: float, resp=None,
+                  error: Exception | None = None, tool_calls: int = 0):
+    """Access-log one non-streamed call (success or failure)."""
+    msg = resp.choices[0].message if resp else None
+    usage = getattr(resp, "usage", None)
+    access_log.log_llm_call(
+        kind, model, t0, None, None, time.time(),
+        getattr(usage, "prompt_tokens", None),
+        getattr(usage, "completion_tokens", None),
+        len(_reasoning_of(msg)) if msg else 0,
+        len(msg.content or "") if msg else 0,
+        tool_calls=tool_calls,
+        error=f"{type(error).__name__}: {error}" if error else None)
+
+
 async def complete(messages: list[dict], temperature: float = 0.2,
                    max_tokens: int | None = None,
                    oai: AsyncOpenAI | None = None, model: str | None = None) -> str:
-    resp = await (oai or client).chat.completions.create(
-        model=model or config.LLM_MODEL,
-        messages=_normalize(messages),
-        temperature=temperature,
-        max_tokens=max_tokens or config.LLM_MAX_TOKENS,
-    )
+    model = model or config.LLM_MODEL
+    t0 = time.time()
+    try:
+        resp = await (oai or client).chat.completions.create(
+            model=model,
+            messages=_normalize(messages),
+            temperature=temperature,
+            max_tokens=max_tokens or config.LLM_MAX_TOKENS,
+        )
+    except Exception as e:
+        _log_buffered("complete", model, t0, error=e)
+        raise
+    _log_buffered("complete", model, t0, resp)
     return resp.choices[0].message.content or ""
 
 
@@ -50,27 +87,35 @@ async def chat(messages: list[dict], tools: list[dict], *,
 
     tool_choice="required" forces the model to call a tool (vLLM guided
     decoding); falls back to "auto" if the server rejects it."""
+    model = model or config.LLM_MODEL
+    t0 = time.time()
     try:
-        resp = await (oai or client).chat.completions.create(
-            model=model or config.LLM_MODEL,
-            messages=_normalize(messages),
-            tools=tools,
-            tool_choice=tool_choice,
-            temperature=temperature,
-            max_tokens=max_tokens or config.LLM_MAX_TOKENS,
-        )
-    except Exception:
-        if tool_choice == "auto":
-            raise
-        resp = await (oai or client).chat.completions.create(
-            model=model or config.LLM_MODEL,
-            messages=_normalize(messages),
-            tools=tools,
-            tool_choice="auto",
-            temperature=temperature,
-            max_tokens=max_tokens or config.LLM_MAX_TOKENS,
-        )
-    return resp.choices[0].message
+        try:
+            resp = await (oai or client).chat.completions.create(
+                model=model,
+                messages=_normalize(messages),
+                tools=tools,
+                tool_choice=tool_choice,
+                temperature=temperature,
+                max_tokens=max_tokens or config.LLM_MAX_TOKENS,
+            )
+        except Exception:
+            if tool_choice == "auto":
+                raise
+            resp = await (oai or client).chat.completions.create(
+                model=model,
+                messages=_normalize(messages),
+                tools=tools,
+                tool_choice="auto",
+                temperature=temperature,
+                max_tokens=max_tokens or config.LLM_MAX_TOKENS,
+            )
+    except Exception as e:
+        _log_buffered("chat", model, t0, error=e)
+        raise
+    m = resp.choices[0].message
+    _log_buffered("chat", model, t0, resp, tool_calls=len(m.tool_calls or []))
+    return m
 
 
 async def stream(messages: list[dict], temperature: float = 0.2,
@@ -85,28 +130,59 @@ async def stream(messages: list[dict], temperature: float = 0.2,
     in a non-standard delta field whose name varies by build ("reasoning" here,
     "reasoning_content" elsewhere), so check both.
     """
-    s = await (oai or client).chat.completions.create(
-        model=model or config.LLM_MODEL,
+    model = model or config.LLM_MODEL
+    t0 = time.time()
+    kwargs = dict(
+        model=model,
         messages=_normalize(messages),
         temperature=temperature,
         max_tokens=max_tokens or config.LLM_MAX_TOKENS,
         stream=True,
     )
-    async for chunk in s:
-        if not chunk.choices:
-            continue
-        delta = chunk.choices[0].delta
-        if include_reasoning:
+    try:
+        # include_usage: vLLM appends a final usage-only chunk to the stream.
+        s = await (oai or client).chat.completions.create(
+            stream_options={"include_usage": True}, **kwargs)
+    except Exception:
+        try:  # older servers reject stream_options — retry without
+            s = await (oai or client).chat.completions.create(**kwargs)
+        except Exception as e:
+            access_log.log_llm_call("stream", model, t0, None, None,
+                                    time.time(), None, None, 0, 0,
+                                    error=f"{type(e).__name__}: {e}")
+            raise
+    t_first = t_first_content = usage = None
+    r_chars = c_chars = 0
+    try:
+        async for chunk in s:
+            if getattr(chunk, "usage", None):
+                usage = chunk.usage
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
             extra = delta.model_extra or {}
             reasoning = (getattr(delta, "reasoning", None)
                          or getattr(delta, "reasoning_content", None)
                          or extra.get("reasoning") or extra.get("reasoning_content"))
             if reasoning:
-                yield ("reasoning", reasoning)
+                t_first = t_first or time.time()
+                r_chars += len(reasoning)
+                if include_reasoning:
+                    yield ("reasoning", reasoning)
             if delta.content:
-                yield ("content", delta.content)
-        elif delta.content:
-            yield delta.content
+                now = time.time()
+                t_first = t_first or now
+                t_first_content = t_first_content or now
+                c_chars += len(delta.content)
+                yield ("content", delta.content) if include_reasoning \
+                    else delta.content
+    finally:
+        # logged even when the consumer disconnects mid-stream
+        access_log.log_llm_call(
+            "stream", model, t0, t_first, t_first_content, time.time(),
+            getattr(usage, "prompt_tokens", None),
+            getattr(usage, "completion_tokens", None),
+            r_chars, c_chars)
 
 
 async def stream_with_thinking(messages: list[dict], temperature: float = 0.2,
@@ -146,6 +222,7 @@ async def complete_json(messages: list[dict], schema: dict,
     """
     use_client, model = ((fast_client, config.ROUTER_LLM_MODEL) if fast
                          else (client, config.LLM_MODEL))
+    t0 = time.time()
     try:
         resp = await use_client.chat.completions.create(
             model=model,
@@ -158,7 +235,9 @@ async def complete_json(messages: list[dict], schema: dict,
             },
         )
         text = resp.choices[0].message.content or ""
-    except Exception:
+        _log_buffered("complete_json", model, t0, resp)
+    except Exception as e:
+        _log_buffered("complete_json", model, t0, error=e)
         text = ""
     try:
         return _parse_json(text)

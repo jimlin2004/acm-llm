@@ -92,7 +92,8 @@ async def _run_and_push(user_id: str, text: str):
     from .telegram_bot import _detect_lang
     lang = _detect_lang(text)
     try:
-        flow_body = {"user_id": f"line:{user_id}", "message": text}
+        flow_body = {"user_id": f"line:{user_id}", "message": text,
+                     "client": {"channel": "line"}}
         if text.lstrip().startswith("/migrate"):
             flow_body["flow_id"] = "migrate_circuit"
         async with httpx.AsyncClient(timeout=None) as c:

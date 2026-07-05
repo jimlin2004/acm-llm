@@ -317,13 +317,42 @@ resume decisions from [§5](#5-human-in-the-loop-pause--resume).
 
 ## 11. Observability
 
-- Log every node entry/exit and every interrupt/resume with `thread_id`, `flow_id`, step,
-  args (redacted), latency, outcome.
-- Add structured logs for tool calls (the sim adapter logs request/outcome).
+### Access log (implemented)
+
+`app/access_log.py` writes one JSON line per event to **both**
+`/data/access.jsonl` (host: `orchestrator/data/access.jsonl`, rotating 20 MB × 5) and
+stdout (→ promtail → Loki):
+
+- `{"type": "llm_call", ...}` — every LLM API call: `kind`
+  (complete/chat/stream/complete_json), `model`, `duration_s`, `ttft_s` (queue +
+  prefill), `thinking_s` (first token → first answer token; streamed calls),
+  `prompt_tokens`/`completion_tokens`, `tokens_per_s`, `tool_calls`, attributed to the
+  calling `channel`/`user_id` via a request ContextVar.
+- `{"type": "flow", ...}` — every orchestrator request: `channel` + `user_id` + `client`
+  (Telegram username/display name/chat_id), `flow_id`, `status`, the request text and the
+  answer (base64 charts stripped, capped at 4 kB), `duration_s`, `pre_llm_s`,
+  `llm_calls`/`llm_time_s`, token totals, summed `thinking_s`.
+
+Query examples:
+
+```bash
+# who used the bot today, per user
+jq -r 'select(.type=="flow") | [.channel, .user_id, (.client.username // "-"), .flow_id, .duration_s] | @tsv' \
+  orchestrator/data/access.jsonl
+
+# slowest LLM calls
+jq -r 'select(.type=="llm_call") | [.duration_s, .model, .kind, .user_id] | @tsv' \
+  orchestrator/data/access.jsonl | sort -rn | head
+```
+
+In Grafana Explore (Loki): `{container="orchestrator"} |= "\"type\": \"flow\"" | json`.
+
+### Other observability
+
+- Node/tool-level logs carry `thread_id`/`flow_id` context on stdout.
 - Surface flow state via `GET /flow/{thread_id}` for debugging.
-- Container logs flow to the lab's Loki/Grafana stack via promtail.
-- **Gaps (planned, not yet implemented):** rate limiting, request metrics, per-user
-  quotas and structured per-flow JSON logs — see [`hardening-plan.md`](hardening-plan.md).
+- **Still planned:** rate limiting, Prometheus metrics + dashboards — see
+  [`hardening-plan.md`](hardening-plan.md) (Phase 2 tracing is DONE).
 
 ---
 

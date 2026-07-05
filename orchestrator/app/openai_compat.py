@@ -97,7 +97,8 @@ async def chat_completions(req: Request):
     cid = "chatcmpl-" + uuid.uuid4().hex
     created = int(time.time())
 
-    flow_body = {"user_id": user_id, "message": text}
+    flow_body = {"user_id": user_id, "message": text,
+                 "client": {"channel": "webui"}}
     # Explicit command -> route straight to the PDK-migration flow (never auto).
     if text.lstrip().startswith("/migrate"):
         flow_body["flow_id"] = "migrate_circuit"

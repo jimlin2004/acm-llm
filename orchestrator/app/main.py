@@ -17,7 +17,7 @@ from fastapi.responses import StreamingResponse
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from pydantic import BaseModel
 
-from . import config, llm, router, vision
+from . import access_log, config, llm, router, vision
 from . import flows  # noqa: F401  — imports trigger flow registration
 from .engine import FlowEngine
 from .memory import ChatMemory
@@ -82,6 +82,8 @@ class StartRequest(BaseModel):
     message: str
     attachments: list[AttachmentIn] = []
     images: list[ImageIn] = []   # schematic photos for the vision path
+    client: dict = {}            # channel metadata for the access log
+                                 # (e.g. {"channel","username","chat_id"})
     flow_id: str | None = None   # set to skip the LLM router
     params: dict = {}
     wait: bool = True            # false -> return thread_id at once, poll GET /flow/{id}
@@ -151,6 +153,20 @@ async def _image_flow(req: "StartRequest", history: list) -> dict:
 
 @app.post("/flow/start")
 async def flow_start(req: StartRequest):
+    access_log.start_request(req.user_id, req.client, "flow/start")
+    result = None
+    try:
+        result = await _flow_start_impl(req)
+        return result
+    finally:
+        r = result if isinstance(result, dict) else {}
+        access_log.end_request(
+            None, r.get("thread_id"), r.get("status") or "error",
+            req.message, r.get("message"),
+            n_attachments=len(req.attachments), n_images=len(req.images))
+
+
+async def _flow_start_impl(req: StartRequest):
     engine: FlowEngine = app.state.engine
     memory: ChatMemory = app.state.memory
     attachments = [Attachment(a.name, a.content) for a in req.attachments]
@@ -167,6 +183,9 @@ async def flow_start(req: StartRequest):
         flow_id = routed["flow_id"]
         params = {**routed["params"], **params}
         log.info("routed to flow=%s params=%s", flow_id, list(params))
+    ctx = access_log.request_ctx.get()
+    if ctx is not None:
+        ctx["flow_id"] = flow_id or "vision"
 
     # Photos take the vision path only when no flow was forced — an explicit
     # flow_id (e.g. Telegram "/migrate" caption) keeps its meaning.
@@ -189,6 +208,8 @@ async def flow_start(req: StartRequest):
             # flow_id (e.g. /migrate) keeps the precise clarification.
             if req.flow_id is not None or attachments:
                 return {"thread_id": None, "status": "clarify", "message": str(e)}
+            if ctx is not None:  # router misroute answered as chat — log truth
+                ctx["flow_id"] = f"chat (fallback from {flow_id})"
             answer = await llm.complete(
                 _chat_messages(req.message, history), temperature=0.6)
             result = {"thread_id": None, "status": "completed", "message": answer}
@@ -226,6 +247,7 @@ async def flow_stream(req: StartRequest):
     appear immediately instead of polling. Flows without a stream_run runner
     fall back to running to completion and emitting the whole answer at once.
     """
+    access_log.start_request(req.user_id, req.client, "flow/stream")
     attachments = [Attachment(a.name, a.content) for a in req.attachments]
     flow_id, params = req.flow_id, dict(req.params)
     if flow_id is None and not req.images:
@@ -233,6 +255,9 @@ async def flow_stream(req: StartRequest):
         flow_id = routed["flow_id"]
         params = {**routed["params"], **params}
         log.info("routed to flow=%s params=%s", flow_id, list(params))
+    ctx = access_log.request_ctx.get()
+    if ctx is not None:
+        ctx["flow_id"] = flow_id or "vision"
 
     async def gen():
         # Same vision path as /flow/start, minus token streaming (the image
@@ -293,7 +318,25 @@ async def flow_stream(req: StartRequest):
                         "text": f"\n\n[error while running flow: {type(e).__name__}: {e}]"})
         yield _sse({"type": "done"})
 
-    return StreamingResponse(gen(), media_type="text/event-stream")
+    async def gen_logged():
+        # Tap the SSE stream to reassemble the answer for the access log —
+        # logged in `finally` so a client disconnect still leaves a record.
+        parts = []
+        try:
+            async for line in gen():
+                try:
+                    ev = json.loads(line[6:])
+                    if ev.get("type") == "delta" and ev.get("text"):
+                        parts.append(ev["text"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+                yield line
+        finally:
+            access_log.end_request(
+                None, None, "streamed", req.message, "".join(parts),
+                n_attachments=len(req.attachments), n_images=len(req.images))
+
+    return StreamingResponse(gen_logged(), media_type="text/event-stream")
 
 
 @app.post("/flow/{thread_id}/resume")

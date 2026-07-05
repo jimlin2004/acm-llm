@@ -39,15 +39,17 @@ Load-tested reality today:
    pipe reaches the orchestrator over `app-net` by service name, so nothing breaks), or
    add a Bearer-token FastAPI middleware if off-host callers are required.
 
-## Phase 2 — Tracing (~half a day)
+## Phase 2 — Tracing — **DONE 2026-07-05**
 
-6. **One structured JSON log line per flow** at completion:
-   `{thread_id, user_id, channel, flow_id, status, duration_s, sim_calls, llm_calls,
-   prompt_chars, image_bytes}`. Emitted by `flow_start`/`flow_stream`; promtail already
-   ships container stdout to Loki, so Grafana Explore can immediately answer "who is
-   spamming, which flow is slow".
+6. ~~One structured JSON log line per flow~~ Implemented in `app/access_log.py`: a
+   `flow` record per request (channel, user + Telegram username, request/answer text,
+   durations, token totals) **plus** an `llm_call` record per LLM API call (TTFT,
+   thinking time, tokens/s), written to `/data/access.jsonl` and stdout→Loki. See
+   `orchestrator.md` §11 for the record schema and query examples.
 7. **Propagate `thread_id` as request id** into every log line inside a flow (logging
-   contextvars), so a single Loki query reconstructs one request end-to-end.
+   contextvars), so a single Loki query reconstructs one request end-to-end —
+   *partially covered*: llm_call/flow records share the request context; ordinary
+   `log.info` lines are not yet tagged.
 
 ## Phase 3 — Metrics & dashboards (~1 day)
 

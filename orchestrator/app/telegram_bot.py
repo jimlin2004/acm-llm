@@ -460,7 +460,7 @@ async def _start_session(client: httpx.AsyncClient, chat_id: int, user_id: int):
 
 async def _run_and_reply(client: httpx.AsyncClient, chat_id: int,
                          user_id: int, text: str, attachment=None,
-                         photos=None):
+                         photos=None, tg_user: dict | None = None):
     log.info("tg in chat_id=%s from=%s attach=%s photo=%s text=%r",
              chat_id, user_id, bool(attachment), bool(photos),
              (text or "")[:120])
@@ -485,8 +485,16 @@ async def _run_and_reply(client: httpx.AsyncClient, chat_id: int,
             text = _ANALYZE_PROMPT[_chat_lang.get(chat_id, "en")]
         # Multi-turn memory: history is kept server-side per chat, scoped to the
         # session (reset by /start), and re-injected into whichever flow runs.
+        tg_user = tg_user or {}
         flow_body = {"user_id": f"telegram:{user_id}", "message": text,
-                     "use_memory": True}
+                     "use_memory": True,
+                     # who is calling — lands in the orchestrator access log
+                     "client": {
+                         "channel": "telegram", "chat_id": chat_id,
+                         "username": tg_user.get("username"),
+                         "name": " ".join(filter(None, [
+                             tg_user.get("first_name"),
+                             tg_user.get("last_name")])) or None}}
         if text.lstrip().startswith("/migrate"):
             flow_body["flow_id"] = "migrate_circuit"
         if image is not None:                         # schematic photo
@@ -642,7 +650,8 @@ async def poll_forever():
                     if text.strip() or attachment is not None or photos:
                         t = asyncio.create_task(
                             _run_and_reply(client, chat_id, user_id,
-                                           text, attachment, photos))
+                                           text, attachment, photos,
+                                           msg.get("from") or {}))
                         _running[chat_id] = t   # /cancel targets this task
                         t.add_done_callback(
                             lambda fut, c=chat_id:
