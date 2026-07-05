@@ -28,8 +28,12 @@ import base64
 import logging
 import os
 import re
+import time
+from collections import deque
 
 import httpx
+
+from . import config
 
 log = logging.getLogger("telegram")
 
@@ -200,6 +204,27 @@ _MSG = {
         "vi": "Không có tác vụ nào đang chạy.",
         "zh": "目前沒有進行中的任務。",
     },
+    "not_allowed": {
+        "en": "This bot is private to ACM Lab members. "
+              "Please contact the admin to get access.",
+        "vi": "Bot này chỉ dành cho thành viên ACM Lab. "
+              "Vui lòng liên hệ admin để được cấp quyền.",
+        "zh": "此機器人僅供 ACM Lab 成員使用，請聯絡管理員取得權限。",
+    },
+    "busy_chat": {
+        "en": "⏳ I'm still working on your previous request — "
+              "send /cancel to abort it first.",
+        "vi": "⏳ Tôi vẫn đang xử lý yêu cầu trước của bạn — "
+              "gửi /cancel nếu muốn huỷ nó.",
+        "zh": "⏳ 我還在處理您上一個請求 — 想中止請先傳送 /cancel。",
+    },
+    "rate_limited": {
+        "en": "You're sending requests too quickly — please wait a moment "
+              "and try again.",
+        "vi": "Bạn đang gửi yêu cầu quá nhanh — vui lòng đợi một chút "
+              "rồi thử lại.",
+        "zh": "您傳送請求的速度過快，請稍候再試。",
+    },
     "photo_failed": {
         "en": "I couldn't download your image from Telegram. "
               "Please try sending it again.",
@@ -219,6 +244,33 @@ def _msg(chat_id: int, key: str, **kw) -> str:
 # (Cancelling stops waiting for/replying with the result; a flow already
 # started server-side simply finishes unobserved.)
 _running: dict[int, asyncio.Task] = {}
+
+# Abuse guards (docs/hardening-plan.md Phase 1): request timestamps per chat
+# for the rate limit, and when each chat last got a rate-limit notice (so the
+# notice itself cannot be spammed).
+_recent: dict[int, deque] = {}
+_rate_notice: dict[int, float] = {}
+
+
+def _admit(client: httpx.AsyncClient, chat_id: int) -> bool:
+    """Gate an LLM-bound message: one flow per chat + N per window."""
+    prev = _running.get(chat_id)
+    if prev is not None and not prev.done():
+        asyncio.create_task(_send(client, chat_id, _msg(chat_id, "busy_chat")))
+        return False
+    now = time.time()
+    seen = _recent.setdefault(chat_id, deque())
+    while seen and now - seen[0] > config.TELEGRAM_RATE_WINDOW:
+        seen.popleft()
+    if len(seen) >= config.TELEGRAM_RATE_N:
+        log.warning("tg rate-limited chat_id=%s", chat_id)
+        if now - _rate_notice.get(chat_id, 0.0) > 15:
+            _rate_notice[chat_id] = now
+            asyncio.create_task(
+                _send(client, chat_id, _msg(chat_id, "rate_limited")))
+        return False
+    seen.append(now)
+    return True
 
 _FEEDBACK_LOG = os.environ.get("FEEDBACK_LOG", "/data/feedback.log")
 
@@ -569,6 +621,16 @@ async def poll_forever():
                     if chat_id is None:
                         continue
 
+                    # Allowlist (empty = open): strangers get a polite denial
+                    # before any command or flow handling.
+                    if (config.TELEGRAM_ALLOWED_CHAT_IDS and chat_id
+                            not in config.TELEGRAM_ALLOWED_CHAT_IDS):
+                        log.warning("tg denied chat_id=%s user=%s (allowlist)",
+                                    chat_id, user_id)
+                        asyncio.create_task(_send(
+                            client, chat_id, _msg(chat_id, "not_allowed")))
+                        continue
+
                     first = (text.strip().split(maxsplit=1)[0].lower()
                              if text.strip() else "")
                     # Commands are plain ASCII: only pick up a language signal
@@ -648,6 +710,8 @@ async def poll_forever():
                               if attachment is None else None)
 
                     if text.strip() or attachment is not None or photos:
+                        if not _admit(client, chat_id):
+                            continue
                         t = asyncio.create_task(
                             _run_and_reply(client, chat_id, user_id,
                                            text, attachment, photos,

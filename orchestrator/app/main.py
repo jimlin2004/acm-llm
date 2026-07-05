@@ -17,7 +17,7 @@ from fastapi.responses import StreamingResponse
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from pydantic import BaseModel
 
-from . import access_log, config, llm, router, vision
+from . import access_log, config, llm, metrics, router, vision
 from . import flows  # noqa: F401  — imports trigger flow registration
 from .engine import FlowEngine
 from .memory import ChatMemory
@@ -64,6 +64,43 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="ACM Orchestrator", lifespan=lifespan)
 app.include_router(openai_router)
 app.include_router(line_router)
+app.mount("/metrics", metrics.asgi_app)
+
+
+# --- Global concurrency guard (docs/hardening-plan.md Phase 1) ---------------
+# One GPU serves every flow; beyond the cap we shed load with a polite "busy"
+# instead of queueing unboundedly (which only multiplies timeouts).
+_inflight = 0
+
+
+def _try_acquire() -> bool:
+    global _inflight
+    if _inflight >= config.MAX_CONCURRENT_FLOWS:
+        return False
+    _inflight += 1
+    metrics.FLOWS_INFLIGHT.set(_inflight)
+    return True
+
+
+def _release_slot():
+    global _inflight
+    _inflight = max(0, _inflight - 1)
+    metrics.FLOWS_INFLIGHT.set(_inflight)
+
+
+def _busy_reply(message: str) -> dict:
+    ctx = access_log.request_ctx.get()
+    metrics.FLOWS_REJECTED.labels(
+        "busy", ctx["channel"] if ctx else "unknown").inc()
+    text = _pick(
+        message,
+        en="The system is handling several requests right now — please try "
+           "again in a minute.",
+        vi="Hệ thống đang xử lý nhiều yêu cầu — bạn thử lại sau một phút nhé.",
+        zh="系統目前正在處理多個請求，請稍後再試。")
+    result = {"thread_id": None, "status": "busy", "message": text}
+    access_log.end_request(None, None, "busy", message, text)
+    return result
 
 
 class AttachmentIn(BaseModel):
@@ -154,11 +191,14 @@ async def _image_flow(req: "StartRequest", history: list) -> dict:
 @app.post("/flow/start")
 async def flow_start(req: StartRequest):
     access_log.start_request(req.user_id, req.client, "flow/start")
+    if not _try_acquire():
+        return _busy_reply(req.message)
     result = None
     try:
         result = await _flow_start_impl(req)
         return result
     finally:
+        _release_slot()
         r = result if isinstance(result, dict) else {}
         access_log.end_request(
             None, r.get("thread_id"), r.get("status") or "error",
@@ -248,16 +288,29 @@ async def flow_stream(req: StartRequest):
     fall back to running to completion and emitting the whole answer at once.
     """
     access_log.start_request(req.user_id, req.client, "flow/stream")
-    attachments = [Attachment(a.name, a.content) for a in req.attachments]
-    flow_id, params = req.flow_id, dict(req.params)
-    if flow_id is None and not req.images:
-        routed = await router.route(req.message, [a.name for a in attachments])
-        flow_id = routed["flow_id"]
-        params = {**routed["params"], **params}
-        log.info("routed to flow=%s params=%s", flow_id, list(params))
-    ctx = access_log.request_ctx.get()
-    if ctx is not None:
-        ctx["flow_id"] = flow_id or "vision"
+    if not _try_acquire():
+        busy = _busy_reply(req.message)
+
+        async def gen_busy():
+            yield _sse({"type": "delta", "text": busy["message"]})
+            yield _sse({"type": "done"})
+        return StreamingResponse(gen_busy(), media_type="text/event-stream")
+
+    try:
+        attachments = [Attachment(a.name, a.content) for a in req.attachments]
+        flow_id, params = req.flow_id, dict(req.params)
+        if flow_id is None and not req.images:
+            routed = await router.route(req.message,
+                                        [a.name for a in attachments])
+            flow_id = routed["flow_id"]
+            params = {**routed["params"], **params}
+            log.info("routed to flow=%s params=%s", flow_id, list(params))
+        ctx = access_log.request_ctx.get()
+        if ctx is not None:
+            ctx["flow_id"] = flow_id or "vision"
+    except Exception:
+        _release_slot()
+        raise
 
     async def gen():
         # Same vision path as /flow/start, minus token streaming (the image
@@ -332,6 +385,7 @@ async def flow_stream(req: StartRequest):
                     pass
                 yield line
         finally:
+            _release_slot()
             access_log.end_request(
                 None, None, "streamed", req.message, "".join(parts),
                 n_attachments=len(req.attachments), n_images=len(req.images))

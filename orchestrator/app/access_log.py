@@ -28,7 +28,7 @@ import time
 from contextvars import ContextVar
 from logging.handlers import RotatingFileHandler
 
-from . import config
+from . import config, metrics
 
 log = logging.getLogger("access")
 
@@ -119,6 +119,12 @@ def log_llm_call(kind: str, model: str, t0: float, t_first: float | None,
     ctx = request_ctx.get()
     if ctx is not None:
         ctx["llm_calls"].append(rec)
+    metrics.LLM_CALLS.labels(model, kind, str(error is None).lower()).inc()
+    metrics.LLM_DURATION.labels(model).observe(dur)
+    if prompt_tokens:
+        metrics.LLM_TOKENS.labels(model, "prompt").inc(prompt_tokens)
+    if completion_tokens:
+        metrics.LLM_TOKENS.labels(model, "completion").inc(completion_tokens)
     _emit({**rec, **_identity(ctx)})
 
 
@@ -149,4 +155,8 @@ def end_request(flow_id: str | None, thread_id: str | None, status: str,
         "completion_tokens": completion or None,
         "thinking_s": round(sum(c["thinking_s"] or 0 for c in calls), 3),
     }
+    metrics.FLOWS_TOTAL.labels(flow_id or "unknown",
+                               rec["channel"], status).inc()
+    metrics.FLOW_DURATION.labels(flow_id or "unknown").observe(
+        rec["duration_s"])
     _emit(rec)

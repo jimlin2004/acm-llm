@@ -67,7 +67,16 @@ services:
       - MIGRATION_API_URL=${MIGRATION_API_URL:-http://host.docker.internal:5000}
       - MIGRATION_DRY_RUN=${MIGRATION_DRY_RUN:-true}
       - MIGRATION_LLM_PROVIDER=${MIGRATION_LLM_PROVIDER:-openai}
+      # Abuse guards (docs/hardening-plan.md Phase 1)
+      - MAX_CONCURRENT_FLOWS=${MAX_CONCURRENT_FLOWS:-3}
+      - TELEGRAM_ALLOWED_CHAT_IDS=${TELEGRAM_ALLOWED_CHAT_IDS:-}
+      - TELEGRAM_RATE_N=${TELEGRAM_RATE_N:-5}
+      - TELEGRAM_RATE_WINDOW=${TELEGRAM_RATE_WINDOW:-60}
     ports:
-      - "8100:8000"
+      # NOT 0.0.0.0 — the API has no auth. Loopback for host tools plus the
+      # docker bridge gateway so Open WebUI (bridge net) still reaches it via
+      # host.docker.internal; the LAN cannot.
+      - "127.0.0.1:8100:8000"
+      - "172.17.0.1:8100:8000"
     volumes:
       - ./orchestrator/data:/data
