@@ -22,9 +22,9 @@ contract see [`sim-api-spec.md`](sim-api-spec.md).
 | **sim-server** | container, `app-net` | `127.0.0.1:9000` | Local ngspice circuit simulation (`POST /simulate`, Bearer auth). Replaced the external OpenClaw node on 2026-06-30. |
 | **Open WebUI** | container, bridge net | internal `8080`→host `3010` | Chat UI. The **"ACM Assistant"** model is a pipe to the orchestrator. |
 | **Caddy** `caddy-proxy` | host net | `:3000`, `:8081` | `:3000` fronts Open WebUI. `:8081` is the authenticated **LLM gateway** (shared Bearer key → vLLM) for external OpenAI-compatible callers. See [`llm-api-access.md`](llm-api-access.md). |
-| **LiteLLM** `litellm-proxy` | host net | `8003` | Unauthenticated logging passthrough to vLLM (`custom_logger` → `litellm/logs/llm_traffic.jsonl`). **Not** in the orchestrator's path and not for external exposure. |
+| **LiteLLM** `litellm-proxy` | host net | `127.0.0.1:8003` | Unauthenticated logging passthrough to vLLM (`custom_logger` → `litellm/logs/llm_traffic.jsonl`). **Not** in the orchestrator's path; bound to loopback only. |
 | **LINE tunnel** `line-tunnel` | container | – | cloudflared tunnel delivering LINE webhooks to the orchestrator. |
-| **SearXNG** | container, `app-net` | host `5050` | Private meta-search backing Open WebUI web search. |
+| **SearXNG** | container, `app-net` | `127.0.0.1`+`172.17.0.1` `:5050` | Private meta-search backing Open WebUI web search. Not LAN-reachable. |
 | **Monitoring** | separate compose | – | Grafana (`:3001`), Prometheus, Loki, cAdvisor, node-exporter, promtail, nvidia-gpu-exporter. |
 
 The orchestrator talks to vLLM **directly** (`host.docker.internal:8002`); LiteLLM on

@@ -11,7 +11,7 @@
 #   open-webui    ghcr.io/open-webui/open-webui:cuda, network bridge, 127.0.0.1:3010→8080
 #                 fronted by caddy-proxy :3000; volume open-webui:/app/backend/data
 #   caddy-proxy   host net — :3000 (WebUI front), :8081 (authed LLM gateway → vLLM)
-#   litellm-proxy host net — :8003 logging passthrough to vLLM (no auth, local only)
+#   litellm-proxy host net — 127.0.0.1:8003 logging passthrough to vLLM (no auth)
 #   line-tunnel   cloudflared tunnel delivering LINE webhooks to the orchestrator
 #   ollama        runs on the host (systemd, *:11434) — small model qwen2.5:3b-instruct
 #                 acting as the intent router for the orchestrator (ROUTER_LLM_* in .env)
@@ -48,7 +48,10 @@ services:
       - AUTOCOMPLETE=false
 
     ports:
-      - "5050:8080"
+      # loopback + docker bridge gateway only — Open WebUI reaches it via
+      # host.docker.internal:5050; the LAN has no business querying it.
+      - "127.0.0.1:5050:8080"
+      - "172.17.0.1:5050:8080"
 
     volumes:
       - ./searxng:/etc/searxng
