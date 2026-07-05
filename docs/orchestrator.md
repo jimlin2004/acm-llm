@@ -5,9 +5,11 @@ flow step by step, **pauses for human verification** where a flow requires it, a
 the final result. The heavy work (circuit simulation, and later generation / optimization)
 is done by external APIs ("tools").
 
-> Status: **implemented and live.** The `evaluate_circuit` flow runs end-to-end against the
-> ngspice sim-server, streamed into Open WebUI. This doc describes the architecture, the
-> flow/tool/state contracts, and the public API. Sections marked *(future)* are not built yet.
+> Status: **implemented and live.** Three flows (`evaluate_circuit`, `hermes_eval`,
+> `migrate_circuit`) plus a schematic-photo vision path run end-to-end against the local
+> ngspice sim-server, served to Open WebUI, Telegram and LINE. This doc describes the
+> architecture, the flow/tool/state contracts, and the public API. Sections marked
+> *(future)* are not built yet.
 
 ---
 
@@ -40,7 +42,7 @@ current scale.
 A FastAPI `orchestrator` service on the existing `app-net` network (host port `8100` → container `8000`).
 
 ```
-Client / Open WebUI pipe
+Open WebUI pipe / Telegram bot (in-process long-poll) / LINE webhook / API client
         │  POST /flow/start , POST /flow/stream (SSE) , POST /flow/{id}/resume
         ▼
 ┌──────────────────────────────────────────────┐
@@ -53,12 +55,13 @@ Client / Open WebUI pipe
 └───────┬───────────────┬───────────────┬────────┘
         │ router LLM     │ main LLM      │ tool calls
         ▼                ▼               ▼
-   Ollama :11434     vLLM :8002      Sim server (ngspice /simulate
-   qwen2.5:3b       qwen3.6-35b-a3b   over Tailscale; sim-mock fallback)
+   Ollama :11434     vLLM :8002      sim-server :9000 (local ngspice
+   qwen2.5:3b       qwen3.6-35b-a3b   container on app-net)
 ```
 
 - **Main LLM** calls go **directly to vLLM** at `http://host.docker.internal:8002/v1`
-  (model `qwen3.6-35b-a3b`). There is no LiteLLM gateway any more.
+  (model `qwen3.6-35b-a3b`) — no gateway in the orchestrator's path. (The LiteLLM
+  instance on `:8003` is a logging passthrough for other local callers, not used here.)
 - **Router LLM** calls go to **Ollama** at `http://host.docker.internal:11434/v1`
   (model `qwen2.5:3b-instruct`); it falls back to the main LLM if Ollama is unreachable.
 - Clients call the orchestrator (not vLLM directly) for any flow-based request.
@@ -131,6 +134,18 @@ plain LLM answer when the message is not a business request.
 - Optional — some flows return structured data directly without an LLM pass. The
   `evaluate_circuit` flow does its own LLM evaluation step and streams the answer.
 
+### 4.6 Channel adapters
+- **Telegram** (`app/telegram_bot.py`) — long-poll task started from the app lifespan;
+  handles commands, `.cir` uploads, schematic photos, per-chat language, `/cancel`.
+  Calls back into `POST /flow/start` on localhost.
+- **LINE** (`app/line_webhook.py`) — webhook delivered through a cloudflared tunnel.
+- **Open WebUI** (`app/openai_compat.py` + `webui-assets/acm_assistant_pipe.py`) —
+  OpenAI-compatible surface consumed by the WebUI pipe over `/flow/stream`.
+- **Vision** (`app/vision.py`) — schematic-photo transcription + vision-chat fallback
+  used by the image path (§9d).
+
+All adapters converge on the same flow API, so behaviour is identical per channel.
+
 ---
 
 ## 5. Human-in-the-loop: pause & resume
@@ -155,12 +170,18 @@ plain LLM answer when the message is not a business request.
 
 | Method & path | Body | Returns |
 |---|---|---|
-| `POST /flow/start` | `{ user_id, message, attachments?, flow_id?, params?, wait? }` | `{ thread_id, status, artifact?, message? }` |
+| `POST /flow/start` | `{ user_id, message, attachments?, images?, flow_id?, params?, wait?, use_memory?, reset_session? }` | `{ thread_id, status, artifact?, message?, transcribed_netlist? }` |
 | `POST /flow/stream` | same as `/flow/start` | **SSE** stream of `{type: "status"\|"delta", text}` events, then the final answer |
 | `POST /flow/{thread_id}/resume` | `{ decision: "approve"\|"reject"\|"edit", feedback?, edited_artifact? }` | `{ thread_id, status, artifact?, message? }` |
+| `POST /session/reset` | `{ user_id }` | starts a fresh memory session (Telegram `/start`) |
 | `GET /flow/{thread_id}` | – | current state / step / history |
 | `GET /flow?user_id=…` | – | list of the user's threads |
 | `GET /health` | – | liveness probe |
+
+- `attachments` carry text payloads (netlists); `images` carry base64 photos
+  (`{name, b64, mime}`) for the vision path.
+- `use_memory: true` loads/saves per-user session history around the run (the chat
+  channels set it); `reset_session: true` starts a fresh session first.
 
 `status` ∈ `running` · `awaiting_verification` · `completed` · `clarify` · `failed` · `expired`.
 
@@ -212,7 +233,6 @@ For each external API, the adapter captures:
 
 The full simulation contract lives in [`sim-api-spec.md`](sim-api-spec.md) /
 [`../orchestrator/sim-api.openapi.yaml`](../orchestrator/sim-api.openapi.yaml).
-The (historical) OpenClaw integration guide is [`integration-openclaw.md`](integration-openclaw.md).
 
 ---
 
@@ -240,7 +260,36 @@ END
 - The flow exposes `stream_run`, so Open WebUI streams the answer via `/flow/stream`.
 - Waveforms are popped out of the sim response **before** the prompt is built — only scalar
   metrics go to the LLM; the waveform arrays are turned into PNG charts client-side. See
-  [`integration-openclaw.md` §4.3](integration-openclaw.md).
+  [`sim-api-spec.md` §3.1](sim-api-spec.md).
+
+## 9b. Implemented flow — `hermes_eval` (agentic)
+
+A tool-calling agent on the same main LLM (vLLM runs with
+`--enable-auto-tool-choice --tool-call-parser qwen3_xml`): the model itself decides
+whether to call `simulate_circuit` / `plot_waveforms`, may modify the netlist and
+re-simulate, and writes the final assessment. Runs alongside the deterministic
+`evaluate_circuit` pipeline for comparison; the router picks it for
+modify/tune/re-simulate requests. A netlist request forces a first tool call so answers
+are grounded in a fresh simulation, never in stale session history.
+
+## 9c. Implemented flow — `migrate_circuit`
+
+Triggered only by an explicit `/migrate` command (the adapters force the `flow_id`).
+Parses `source:`/`target:`/`spec:` plus the netlist, calls the external PDK-migration
+workbench (`MIGRATION_API_URL`, thanglq's Flask app on server 150: upload →
+`/api/pipeline/run` → fetch plot artifacts) and formats the report.
+`MIGRATION_DRY_RUN=true` by default — real runs consume an HSPICE license token.
+
+## 9d. Vision path — schematic photo → netlist → evaluate
+
+Not a registered flow: when a request carries `images` and no explicit `flow_id`,
+`app/vision.py` asks the (multimodal) main LLM to transcribe the schematic into a
+netlist (structured output; output node named `out`, a title line, one analysis
+directive). On success the normal `evaluate_circuit` flow runs on the transcription and
+the reply starts with the transcribed netlist so the user can verify the reading; the
+raw netlist is also returned as `transcribed_netlist`. If the image is not a readable
+schematic, the request degrades to a plain vision-chat answer. Both `/flow/start` and
+`/flow/stream` support it; Telegram photos land here.
 
 ### Future flow — circuit generate → verify → optimize *(not built yet)*
 
@@ -273,6 +322,8 @@ resume decisions from [§5](#5-human-in-the-loop-pause--resume).
 - Add structured logs for tool calls (the sim adapter logs request/outcome).
 - Surface flow state via `GET /flow/{thread_id}` for debugging.
 - Container logs flow to the lab's Loki/Grafana stack via promtail.
+- **Gaps (planned, not yet implemented):** rate limiting, request metrics, per-user
+  quotas and structured per-flow JSON logs — see [`hardening-plan.md`](hardening-plan.md).
 
 ---
 
@@ -291,33 +342,26 @@ resume decisions from [§5](#5-human-in-the-loop-pause--resume).
 Defined in [`../docker-compose.orchestrator.yml`](../docker-compose.orchestrator.yml)
 (standalone — it does not touch the manually-run vLLM / Open WebUI containers):
 
-```yaml
-  orchestrator:
-    build: ./orchestrator
-    container_name: orchestrator
-    restart: unless-stopped
-    networks: [app-net]
-    extra_hosts: ["host.docker.internal:host-gateway"]
-    environment:
-      - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:8002/v1}
-      - LLM_MODEL=${LLM_MODEL:-qwen3.6-35b-a3b}
-      - ROUTER_LLM_BASE_URL=${ROUTER_LLM_BASE_URL:-}   # Ollama; falls back to LLM_*
-      - ROUTER_LLM_MODEL=${ROUTER_LLM_MODEL:-}
-      - SIM_API_URL=${SIM_API_URL:-http://sim-mock:9000/simulate}
-      - SIM_API_KEY=${SIM_API_KEY:-}
-      - SIM_TIMEOUT=${SIM_TIMEOUT:-180}
-      - SIM_RETRIES=${SIM_RETRIES:-1}
-    ports: ["8100:8000"]
-    volumes: ["./orchestrator/data:/data"]   # SQLite checkpoints + thread metadata
-```
+The compose file runs two services: **sim-server** (local ngspice) and **orchestrator**.
+Environment groups consumed from `.env` (see the compose file for the full list and
+defaults):
+
+| Group | Vars | Purpose |
+|---|---|---|
+| Main LLM | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | direct vLLM endpoint (`:8002`, `qwen3.6-35b-a3b`) |
+| Router | `ROUTER_LLM_*` | Ollama small model; falls back to the main LLM |
+| Hermes | `HERMES_LLM_*` | tool-calling model for `hermes_eval` (reuses the main vLLM) |
+| Simulation | `SIM_API_URL`, `SIM_API_KEY`, `SIM_TIMEOUT`, `SIM_RETRIES` | defaults to the local `sim-server` container |
+| Migration | `MIGRATION_API_URL`, `MIGRATION_DRY_RUN`, `MIGRATION_LLM_PROVIDER` | external PDK-migration workbench |
+| Bots | `TELEGRAM_BOT_TOKEN`, `LINE_CHANNEL_SECRET`, `LINE_CHANNEL_ACCESS_TOKEN` | channel adapters (a missing token disables that channel) |
 
 ```bash
 docker compose -f docker-compose.orchestrator.yml up -d --build
 ```
 
 State lives in SQLite under the mounted `/data` volume — no external database required.
-Set `SIM_API_URL`/`SIM_API_KEY` in `.env` to point at an external sim server; leave them unset to use the
-bundled `sim-mock`.
+`restart` alone does **not** reload `.env`; recreate the container
+(`up -d orchestrator`) after changing it.
 
 ---
 
@@ -329,5 +373,9 @@ bundled `sim-mock`.
 4. [x] Implement the sim API adapter (timeout/retry/error mapping).
 5. [x] Build the `evaluate_circuit` flow; register it in `FLOWS`.
 6. [x] Implement `POST /flow/start`, `/flow/stream`, `/flow/{id}/resume`, `GET /flow/{id}`.
-7. [ ] Add thread TTL/expiry + cleanup job; per-thread locks.
-8. [ ] Build the generate → verify → optimize HITL flow when those APIs arrive.
+7. [x] Channel adapters: Open WebUI pipe, Telegram bot (photos included), LINE webhook.
+8. [x] Per-user session memory (`use_memory` / `/session/reset`).
+9. [x] `hermes_eval` agentic flow; `migrate_circuit` flow; schematic-photo vision path.
+10. [ ] Rate limiting / auth / metrics — see [`hardening-plan.md`](hardening-plan.md).
+11. [ ] Add thread TTL/expiry + cleanup job; per-thread locks.
+12. [ ] Build the generate → verify → optimize HITL flow when those APIs arrive.

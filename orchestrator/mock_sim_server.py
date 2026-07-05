@@ -2,7 +2,7 @@
 
 Stands in for the real sim-server so the orchestrator can be tested
 end to end. Faithfully implements the published contract
-(docs/integration-openclaw.md / orchestrator/sim-api.openapi.yaml):
+(docs/sim-api-spec.md / orchestrator/sim-api.openapi.yaml):
 
   POST /simulate {netlist, options} -> 200 {status, engine, analyses_run,
                                             results, log, warnings, errors}
@@ -97,7 +97,7 @@ def simulate(req: SimRequest):
     # deterministic pseudo-results so repeated runs are comparable
     seed = int(hashlib.sha256(req.netlist.encode()).hexdigest()[:8], 16)
 
-    # metric keys per analysis follow docs/integration-openclaw.md §4
+    # metric keys per analysis follow docs/sim-api-spec.md §2
     results: dict = {}
     if "op" in analyses:
         results["op"] = {f"v({n.lower()})": round(1.0 + (seed % 500) / 100, 4)

@@ -31,7 +31,29 @@ The path does not have to be `/simulate` — the orchestrator calls the full URL
 | Field     | Type   | Required | Notes |
 |-----------|--------|----------|-------|
 | `netlist` | string | ✅       | Complete SPICE netlist (UTF-8), including the `.op/.ac/.dc/.tran/.noise` directives and `.end`. The server runs exactly the analyses declared in the netlist. |
-| `options` | object | ❌ (default `{}`) | Server-defined options (`engine`, `temperature_c`, `corner`, `max_runtime_s`, …). **Unknown keys must be ignored** — do not error on an unsupported key. |
+| `options` | object | ❌ (default `{}`) | Server-defined options. **Unknown keys must be ignored** — do not error on an unsupported key. |
+
+### Supported `options`
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `max_runtime_s` | number | 60 | Per-job runtime ceiling; the server clamps to `[1, 170]`. |
+| `include_waveforms` | bool | `false` | Also return decimated x/y arrays for charting — see §3.1. |
+| `max_points` | number | 2000 | Waveform decimation budget, clamped `[1, 20000]`. |
+
+### Metric conventions
+
+| Analysis | Metric keys |
+|---|---|
+| `op`   | `<vector_name>` (one value per node/variable) |
+| `ac`   | `gain_db_dc`, `gain_db_at_1khz`, `f_3db_hz`, `phase_margin_deg` |
+| `dc`   | `v_out_max`, `v_out_min` |
+| `tran` | `v_out_peak`, `v_out_min`, `v_out_final` |
+| `noise`| `input_noise_integ` |
+
+> The `ac/dc/tran` metrics assume the output node is literally named **`out`**. A netlist
+> using another name (`vout`, `node5`, …) simulates fine but the automatic metrics fail —
+> rename the node before sending (the flows' prompts already enforce this).
 
 ## 3. Response 200 — simulation result
 
@@ -67,12 +89,40 @@ a fix to the user. Use 4xx/5xx only for HTTP/system-level errors (see §4).
 
 **Size limit.** The whole JSON response is embedded into the LLM prompt:
 
-- Total response **< 50 KB**. Do not embed waveforms / raw vectors / time-series point
-  arrays — return only aggregated metrics (gain, f_3db, overshoot, settling time, peak,
-  power, …). Full waveform exchange, if needed, goes through a separate API later
-  (file/URL download), not this response. *(See the opt-in waveforms extension in
-  [`integration-openclaw.md` §4.3](integration-openclaw.md).)*
+- Total response **< 50 KB** without waveforms. Do not embed raw vectors by default —
+  return only aggregated scalar metrics; waveforms are opt-in (§3.1) and are stripped by
+  the client before the response reaches the LLM prompt.
 - `log` trimmed to the last few KB (the part that holds errors/warnings).
+
+## 3.1. Waveforms — opt-in
+
+Set `options.include_waveforms: true` to also receive a `waveforms` field with decimated
+x/y arrays the client renders into charts:
+
+```json
+"waveforms": {
+  "ac": {
+    "x_name": "frequency", "x_unit": "Hz",
+    "x":      [10, 100, 1000, 10000],
+    "series": { "gain_db": [], "phase_deg": [] },
+    "points": 51, "truncated": false
+  }
+}
+```
+
+| Analysis | X axis | Series |
+|---|---|---|
+| `ac` | frequency (Hz) | `gain_db`, `phase_deg` |
+| `tran` | time (s) | `v_out` |
+| `dc` | sweep | `v_out` |
+
+- Even decimation to `max_points`, always keeping the first and last point; `truncated`
+  is set when downsampled. `op`/`noise` have no waveform.
+- Response budget grows to ~2 MB with waveforms on; over budget the server downsamples
+  further and only then drops waveforms — scalar metrics are always kept.
+- **The client must strip `waveforms` before the LLM prompt.** The orchestrator does this
+  in `app/flows/evaluate_circuit.py`: pop → render PNG via `app/tools/charts.py` → embed
+  base64 charts into the markdown answer.
 
 ## 4. HTTP status codes & client behaviour
 

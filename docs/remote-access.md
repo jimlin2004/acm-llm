@@ -3,10 +3,12 @@
 How a person or an external system reaches the lab **privately**, either over **Tailscale**
 (remote / cross-network) or over the **internal LAN** (same network).
 
-> **History:** access used to go through a **LiteLLM proxy** with per-client virtual keys.
-> LiteLLM was removed on 2026-06-15. Programmatic OpenAI-compatible access for external
-> parties now goes through a **Caddy gateway on `:8081`** with a shared Bearer key — see
+> **Note on LiteLLM:** programmatic OpenAI-compatible access for external parties goes
+> through the **Caddy gateway on `:8081`** with a shared Bearer key — see
 > [§4](#4-programmatic-api-access) and [`llm-api-access.md`](llm-api-access.md).
+> A LiteLLM proxy does run again on `:8003` (since 2026-07-02) but only as an
+> **unauthenticated logging passthrough** to vLLM for local traffic analysis — it is NOT
+> an access path and must not be exposed.
 
 > **Golden rule:** never expose **vLLM** (`:8002`) directly. It has no authentication —
 > anyone who reaches it can use the GPUs for free. Only ever expose a fronted, authenticated
@@ -118,9 +120,12 @@ How it is wired:
   the `:8081` block in `caddy/config/Caddyfile` + the key file, then `docker restart caddy-proxy`.
 
 > **Gap to be aware of:** this is a **single shared key** — no per-caller budgets or rate
-> limits (what LiteLLM's virtual keys gave). If you need **scoped, rate-limited, metered**
-> keys, reintroduce a gateway like LiteLLM in front of vLLM. Either way, never hand out raw
-> access to `:8002` — it is unauthenticated.
+> limits. If scoped, rate-limited, metered keys are needed, front vLLM with LiteLLM
+> virtual keys (the `:8003` instance currently runs **without** auth, for logging only —
+> it would need a `master_key` + virtual keys before serving external callers). Either
+> way, never hand out raw access to `:8002` or `:8003` — both are unauthenticated.
+> The wider hardening plan (rate limits, tracing, dashboards) is in
+> [`hardening-plan.md`](hardening-plan.md).
 
 ---
 
