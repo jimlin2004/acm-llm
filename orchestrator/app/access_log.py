@@ -24,13 +24,22 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from contextvars import ContextVar
 from logging.handlers import RotatingFileHandler
 
 from . import config, metrics
 
+# Bare-JSON stdout logger (no asctime/level prefix): the docker log line IS
+# the JSON record, so Loki's `| json` parses it directly in Grafana.
 log = logging.getLogger("access")
+log.propagate = False
+if not log.handlers:
+    _h = logging.StreamHandler(sys.stdout)
+    _h.setFormatter(logging.Formatter("%(message)s"))
+    log.addHandler(_h)
+    log.setLevel(logging.INFO)
 
 _TEXT_CAP = 4000  # max chars of request/answer text kept per record
 _B64_IMG = re.compile(r"data:image/[a-z]+;base64,[A-Za-z0-9+/=]+")
