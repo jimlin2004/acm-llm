@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -29,6 +30,14 @@ from .flows.evaluate_circuit import lang_directive, _pick
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("orchestrator")
+
+
+# Does the message talk about a picture/diagram? Used to re-attach the
+# session's stored photo to a text-only follow-up. "(?<!mô )hình" avoids the
+# Vietnamese word "mô hình" (model), which is not an image reference.
+_IMG_REF = re.compile(
+    r"(?iu)ảnh|(?<!mô )hình|đồ thị|biểu đồ|sơ đồ|schematic|diagram|image|"
+    r"picture|photo|chart|graph|figure|screenshot|图|圖|照片")
 
 
 def _chat_messages(message: str, history: list | None = None) -> list[dict]:
@@ -216,6 +225,21 @@ async def _flow_start_impl(req: StartRequest):
     if req.use_memory and req.reset_session:
         await memory.new_session(req.user_id)
     history = await memory.get_history(req.user_id) if req.use_memory else []
+
+    if req.use_memory:
+        if req.images:
+            # Remember this session's photo(s) for later follow-ups.
+            await memory.save_images(
+                req.user_id, [i.model_dump() for i in req.images])
+        elif (not req.attachments and req.flow_id is None
+                and _IMG_REF.search(req.message or "")):
+            # Text-only follow-up that talks about "the image": history holds
+            # only text, so re-attach the session's stored photo(s).
+            stored = await memory.get_images(req.user_id)
+            if stored:
+                req.images = [ImageIn(**img) for img in stored]
+                log.info("re-attached %d session image(s) for follow-up",
+                         len(stored))
 
     flow_id, params = req.flow_id, dict(req.params)
     if flow_id is None and not req.images:

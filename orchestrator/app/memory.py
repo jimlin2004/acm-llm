@@ -28,6 +28,7 @@ _LINT_BLOCK = re.compile(r"\n*---\n⚠️ \*\*Lint[^\n]*\n(?:- [^\n]*\n?)*")
 _MAX_CONTENT = 4000        # per-message cap kept in the store
 _MAX_TURNS = 16            # most recent turns re-injected as context
 _MAX_HISTORY_CHARS = 8000  # total char budget for the re-injected history
+_MAX_SESSION_IMAGES = 2    # most recent photos remembered per session
 
 
 def _clean(text: str) -> str:
@@ -62,6 +63,20 @@ class ChatMemory:
         await self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_msg_session "
             "ON messages(user_id, session_id, id)")
+        # Photos of the current session (base64). History stores only text, so
+        # a text-only follow-up about "the image" needs these to re-attach.
+        await self._db.execute(
+            """CREATE TABLE IF NOT EXISTS session_images (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   user_id TEXT,
+                   session_id TEXT,
+                   ts REAL,
+                   name TEXT,
+                   b64 TEXT,
+                   mime TEXT)""")
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_img_session "
+            "ON session_images(user_id, session_id, id)")
         await self._db.commit()
 
     async def _session_id(self, user_id: str) -> str:
@@ -107,6 +122,35 @@ class ChatMemory:
             out.append({"role": r["role"], "content": r["content"]})
         out.reverse()                               # back to chronological order
         return out
+
+    async def save_images(self, user_id: str, images: list[dict]):
+        """Remember the session's most recent photo(s), newest last. Only the
+        latest _MAX_SESSION_IMAGES are kept — enough for "the image I just
+        sent" follow-ups without growing the DB unboundedly."""
+        sid = await self._session_id(user_id)
+        for img in images:
+            await self._db.execute(
+                "INSERT INTO session_images(user_id, session_id, ts, name, b64, mime) "
+                "VALUES (?,?,?,?,?,?)",
+                (user_id, sid, time.time(), img.get("name") or "photo.jpg",
+                 img["b64"], img.get("mime") or "image/jpeg"))
+        await self._db.execute(
+            "DELETE FROM session_images WHERE user_id = ? AND session_id = ? "
+            "AND id NOT IN (SELECT id FROM session_images "
+            "  WHERE user_id = ? AND session_id = ? ORDER BY id DESC LIMIT ?)",
+            (user_id, sid, user_id, sid, _MAX_SESSION_IMAGES))
+        await self._db.commit()
+
+    async def get_images(self, user_id: str) -> list[dict]:
+        """Photos of the CURRENT session, oldest→newest ([] after /start)."""
+        sid = await self._session_id(user_id)
+        cur = await self._db.execute(
+            "SELECT name, b64, mime FROM session_images "
+            "WHERE user_id = ? AND session_id = ? ORDER BY id DESC LIMIT ?",
+            (user_id, sid, _MAX_SESSION_IMAGES))
+        rows = await cur.fetchall()
+        return [{"name": r["name"], "b64": r["b64"], "mime": r["mime"]}
+                for r in reversed(rows)]
 
     async def close(self):
         if self._db is not None:

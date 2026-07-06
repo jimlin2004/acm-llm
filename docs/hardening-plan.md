@@ -80,5 +80,7 @@ Load-tested reality today:
   /cleanup job from `orchestrator.md` §14).
 - Telegram's 300 s client-side cap can cut off long `hermes_eval` runs; switching the bot
   to `wait:false` + polling would decouple it from flow duration.
-- Images are not persisted into session memory: a follow-up question about an earlier
-  photo reaches the model without the photo.
+- ~~Images are not persisted into session memory~~ — resolved 2026-07-06: the
+  session's most recent photos are stored in the memory DB and re-attached to
+  text-only follow-ups that reference an image (plus Telegram reply-to-message
+  media extraction).
