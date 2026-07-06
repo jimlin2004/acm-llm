@@ -693,7 +693,13 @@ async def poll_forever():
                             _msg(chat_id, "unknown_cmd", cmd=first)))
                         continue
 
-                    doc = msg.get("document")
+                    # Replying to an earlier message that carried a photo or a
+                    # .cir file means "about THIS" — pull the media out of
+                    # reply_to_message so the follow-up actually sees it
+                    # (images are not kept in session memory).
+                    reply = msg.get("reply_to_message") or {}
+
+                    doc = msg.get("document") or reply.get("document")
                     attachment = None
                     if doc:
                         name = (doc.get("file_name") or "").lower()
@@ -703,10 +709,11 @@ async def poll_forever():
                             if got:
                                 attachment = {"name": got[0], "content": got[1]}
 
-                    # A schematic photo: hand the PhotoSize list to the
-                    # per-chat task; it downloads there and reports failures
-                    # itself, so the dispatch loop is never blocked.
-                    photos = (msg.get("photo")
+                    # A schematic photo (sent directly, or the one in the
+                    # message being replied to): hand the PhotoSize list to
+                    # the per-chat task; it downloads there and reports
+                    # failures itself, so the dispatch loop is never blocked.
+                    photos = (msg.get("photo") or reply.get("photo")
                               if attachment is None else None)
 
                     if text.strip() or attachment is not None or photos:
