@@ -40,6 +40,11 @@ bằng ngôn ngữ nào, bot đáp bằng ngôn ngữ đó.
 
 ## 3. Một tin nhắn đi qua những đâu?
 
+Điều quan trọng nhất cần hiểu: **AI không tự vận hành hệ thống**. Đứng giữa
+mọi thứ là **BỘ ĐIỀU PHỐI (orchestrator/harness)** — phần mềm do lab tự viết,
+đóng vai trò nhạc trưởng: AI lớn chỉ là *một nhạc công* được gọi lên đúng lúc,
+bên cạnh máy mô phỏng, máy đọc ảnh, bộ nhớ hội thoại...
+
 Toàn bộ chuỗi dưới đây chạy **trong máy chủ của lab**:
 
 ```
@@ -48,26 +53,41 @@ Toàn bộ chuỗi dưới đây chạy **trong máy chủ của lab**:
         ▼
  ① BOT TELEGRAM ─ nhận tin, tải file/ảnh về
         ▼
- ② BỘ ĐIỀU PHỐI (orchestrator) ─ "nhạc trưởng" của hệ thống
-        │
-        │  một AI nhỏ, nhanh đọc tin nhắn và quyết định:
-        │  đây là câu hỏi thường? mạch cần mô phỏng? ảnh? migrate?
+╔══════════════════════════════════════════════════════════════╗
+║ ② BỘ ĐIỀU PHỐI (HARNESS) — "nhạc trưởng", code chứ không phải AI ║
+║                                                                ║
+║  • kiểm tra quyền + chống spam (mỗi người 1 việc, 5 req/phút)  ║
+║  • nạp ngữ cảnh hội thoại của bạn (bot "nhớ" các câu trước)    ║
+║  • nhờ AI nhỏ đoán ý định (~1s) rồi TỰ QUYẾT chạy luồng nào:   ║
+║        câu hỏi thường / mô phỏng / đọc ảnh / migrate           ║
+║  • gọi từng công cụ theo đúng kịch bản đã lập trình:           ║
+║        ├─ MÁY MÔ PHỎNG ngspice  ← chạy netlist, đo số liệu     ║
+║        ├─ AI LỚN nhìn ảnh       ← chép schematic ra netlist    ║
+║        ├─ MÁY CHUYỂN PDK        ← khi bạn gõ /migrate          ║
+║        └─ AI LỚN (vLLM Qwen3.6-35B, GPU lab) ← soạn câu trả lời║
+║  • ghép kết quả: số liệu sim + nhận xét AI + đồ thị            ║
+║  • ghi log (ai hỏi gì, mất bao lâu) để vận hành hệ thống       ║
+╚══════════════════════════════════════════════════════════════╝
         ▼
- ③ XỬ LÝ THEO LUỒNG PHÙ HỢP
-        ├─ Câu hỏi thường ──────────────► AI lớn trả lời thẳng
-        ├─ Có netlist ─► MÔ PHỎNG ngspice ─► AI lớn đọc kết quả,
-        │               (máy sim riêng)      viết nhận xét + vẽ đồ thị
-        ├─ Có ảnh mạch ─► AI lớn NHÌN ảnh, chép ra netlist
-        │                 → rồi đi tiếp nhánh mô phỏng ở trên
-        └─ /migrate ────► máy chủ chuyển đổi PDK
-        ▼
- ④ AI LỚN (vLLM — Qwen3.6-35B, chạy trên GPU của lab)
-        │  soạn câu trả lời cuối cùng bằng ngôn ngữ của bạn
-        ▼
- ⑤ BOT TELEGRAM ─ gửi lại: văn bản + ảnh đồ thị
+ ③ BOT TELEGRAM ─ gửi lại: văn bản + ảnh đồ thị
 ```
 
-Vài điều đáng biết:
+### Vì sao cần bộ điều phối, không để AI "tự lo"?
+
+- **Kỷ luật quy trình:** thứ tự "kiểm tra netlist → mô phỏng → đánh giá" là
+  **code cố định**, AI không được tự bỏ bước. Nhờ vậy kết quả lặp lại được và
+  kiểm chứng được — khác với việc hỏi ChatGPT một câu rồi nhận về con số
+  không rõ nguồn.
+- **AI chỉ làm việc AI giỏi:** hiểu ngôn ngữ, đọc ảnh, viết nhận xét. Còn con
+  số (gain, tần số cắt...) do **ngspice đo**, phép chuyển PDK do máy chuyên
+  dụng làm — bộ điều phối là người chia việc và ráp kết quả lại.
+- **Công bằng & an toàn:** chính bộ điều phối (chứ không phải AI) chặn spam,
+  giới hạn 3 yêu cầu đồng thời trên GPU, ghi log, và giữ mọi dữ liệu trong
+  máy chủ lab.
+- **Dễ mở rộng:** muốn thêm khả năng mới (một máy đo khác, một flow mới) chỉ
+  cần dạy bộ điều phối một "kịch bản" mới — không phải đụng vào AI.
+
+Vài điều đáng biết thêm:
 
 - **AI nhỏ + AI lớn:** việc "đoán ý định" dùng một mô hình nhỏ chạy trong ~1
   giây; chỉ phần trả lời thật sự mới dùng mô hình lớn 35 tỷ tham số. Nhờ vậy
