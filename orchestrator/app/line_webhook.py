@@ -121,6 +121,48 @@ async def _push_text(uid: str, text: str):
     await _push(uid, [{"type": "text", "text": ch} for ch in _chunks(text)][:_MAX_MSGS])
 
 
+# --------------------------------------------------------------------------- #
+# "bot is working" hint — replies can take a while, so signal that we're busy
+# --------------------------------------------------------------------------- #
+LOADING_URL = "https://api.line.me/v2/bot/chat/loading/start"
+# One-time "working" ack for group/room chats (LINE's loading animation is
+# 1:1-only, so groups get a short message instead).
+_WORKING = {"en": "⏳ Working on it…", "vi": "⏳ Đang xử lý…", "zh": "⏳ 處理中…"}
+
+
+async def _start_loading(uid: str, seconds: int = 60):
+    """Show LINE's native loading animation in a 1:1 chat (loadingSeconds 5-60)."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            await c.post(LOADING_URL, headers=_headers(),
+                         json={"chatId": uid, "loadingSeconds": seconds})
+    except Exception:
+        log.debug("loading animation start failed", exc_info=True)
+
+
+async def _keep_loading(uid: str):
+    """Keep the loading animation visible until cancelled — the API caps
+    loadingSeconds at 60, so refresh a little before it lapses."""
+    try:
+        while True:
+            await _start_loading(uid, 60)
+            await asyncio.sleep(55)
+    except asyncio.CancelledError:
+        pass
+
+
+async def _processing_hint(uid: str):
+    """Tell the user we're working. 1:1 chats get the native loading animation
+    (auto-clears when the reply arrives, no message clutter); groups/rooms don't
+    support it on LINE, so send one short ack instead. Returns a task to cancel
+    later (1:1) or None (group/room)."""
+    if uid.startswith("U"):                       # 1:1 chat -> loading animation
+        return asyncio.create_task(_keep_loading(uid))
+    lang = _chat_lang.get(uid, "en")              # group/room -> one-time ack
+    await _push_text(uid, _WORKING.get(lang, _WORKING["en"]))
+    return None
+
+
 async def _download_content(mid: str) -> bytes | None:
     """Download a LINE message's binary content (image/file) via content API."""
     try:
@@ -223,6 +265,8 @@ def _model_label(mid: str) -> str:
 async def _run_and_reply(uid: str, text: str, attachment=None, image=None,
                          profile: dict | None = None):
     lang = _lang(uid, text)
+    # Signal "bot is working" up front — flows (esp. /migrate) can take a while.
+    hint = await _processing_hint(uid)
     try:
         text = text or ""
         if not text.strip() and (attachment is not None or image is not None):
@@ -259,6 +303,10 @@ async def _run_and_reply(uid: str, text: str, attachment=None, image=None,
     except Exception as e:
         log.exception("flow error")
         answer = _msg(uid, "error", e=e)
+
+    # Answer ready — stop the loading animation (the reply also clears it).
+    if hint:
+        hint.cancel()
 
     # Split media out of the answer (LINE can't render inline).
     reply, images = chat_core.split_images(answer)
