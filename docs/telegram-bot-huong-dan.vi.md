@@ -1,138 +1,138 @@
-# ACM Assistant trên Telegram — Hướng dẫn & cách hệ thống hoạt động
+# ACM Assistant — Kiến trúc luồng Telegram → vLLM
 
-> Tài liệu tiếng Việt cho thành viên lab / người dùng không chuyên về AI.
-> Bản kỹ thuật chi tiết (tiếng Anh): [`architecture.md`](architecture.md),
+> Tài liệu tiếng Việt cho thành viên lab (kỹ sư, không yêu cầu nền tảng AI).
+> Chi tiết triển khai đầy đủ (tiếng Anh): [`architecture.md`](architecture.md),
 > [`orchestrator.md`](orchestrator.md).
 
 ---
 
-## 1. ACM Assistant là gì?
+## 1. Tổng quan
 
-Là **trợ lý thiết kế mạch điện tử** của ACM Lab, dùng ngay trong Telegram
-(bot `@acm_llm_bot`). Đằng sau nó là một mô hình AI lớn (LLM) chạy **trên máy
-chủ của lab, không gửi dữ liệu ra ngoài**, kết hợp với một máy mô phỏng mạch
-(ngspice) — nên nó không chỉ "chém gió" lý thuyết mà **chạy mô phỏng thật** và
-trả về số liệu, đồ thị thật.
+ACM Assistant là trợ lý thiết kế mạch chạy trên hạ tầng nội bộ của lab, truy
+cập qua Telegram bot `@acm_llm_bot`. Hệ thống gồm 3 khối chính:
 
-## 2. Bot làm được những gì?
+- **Orchestrator (harness)** — service FastAPI tự phát triển, điều phối toàn
+  bộ pipeline. Đây là thành phần trung tâm: định tuyến yêu cầu, thực thi
+  workflow, gọi công cụ, enforce giới hạn tài nguyên, ghi log.
+- **LLM** — Qwen3.6-35B (multimodal, reasoning) serve bằng vLLM trên GPU của
+  lab. Chỉ đảm nhận các tác vụ ngôn ngữ/thị giác: hiểu yêu cầu, đọc schematic,
+  viết đánh giá.
+- **Công cụ chuyên dụng** — ngspice sim-server (mô phỏng SPICE), pipeline
+  chuyển đổi PDK, module render đồ thị.
 
-| Bạn gửi | Bot trả về |
-|---|---|
-| Câu hỏi lý thuyết mạch (analog/digital), nhờ tính toán | Giải thích + tính toán từng bước |
-| Netlist SPICE (dán vào chat hoặc đính kèm file `.cir`) | Chạy mô phỏng ngspice thật → nhận xét mạch, các thông số (gain, tần số cắt, phase margin...) kèm **đồ thị Bode/transient** |
-| **Ảnh chụp sơ đồ mạch** (schematic) | Bot *đọc ảnh*, tự chuyển thành netlist (có hiện lại cho bạn kiểm tra), rồi mô phỏng và đánh giá như trên |
-| Yêu cầu chỉnh mạch ("đổi R1 để fc = 2kHz rồi sim lại") | Bot tự sửa netlist, mô phỏng lại, so sánh kết quả |
-| Lệnh `/migrate` + netlist | Chuyển mạch giữa các công nghệ chip (PDK), ví dụ sky130 → umc180 (cần máy chủ migration đang bật) |
+Nguyên tắc thiết kế: **LLM không điều khiển hệ thống**. Mọi quyết định thực
+thi (chạy bước nào, gọi công cụ gì, giới hạn ra sao) nằm trong code của
+orchestrator; LLM là một tài nguyên được orchestrator gọi, ngang hàng với
+simulator. Toàn bộ dữ liệu — model, sim, log — không rời khỏi máy chủ lab.
 
-Bot hiểu và trả lời bằng **tiếng Việt, tiếng Anh hoặc tiếng Trung** — cứ hỏi
-bằng ngôn ngữ nào, bot đáp bằng ngôn ngữ đó.
+## 2. Chức năng hỗ trợ
 
-### Các lệnh có sẵn
+| Input | Pipeline | Output |
+|---|---|---|
+| Câu hỏi lý thuyết / tính toán | LLM trả lời trực tiếp | Giải thích, tính toán từng bước |
+| Netlist SPICE (dán text hoặc file `.cir`) | Lint → ngspice → LLM đánh giá | Metrics thực đo (gain, f₋₃dB, phase margin...) + đồ thị Bode/transient |
+| Ảnh schematic | LLM transcribe ảnh → netlist → pipeline mô phỏng như trên | Netlist trích xuất (hiển thị để người dùng verify) + kết quả mô phỏng |
+| Yêu cầu chỉnh mạch ("đổi R1 để fc = 2 kHz") | Agent flow: LLM đề xuất sửa → sim lại → so sánh | Netlist đã sửa + metrics trước/sau |
+| `/migrate` + netlist | Gọi PDK Migration Workbench (external) | Netlist đã port (vd. sky130 → umc180) + validation |
 
-| Lệnh | Ý nghĩa |
-|---|---|
-| `/start`, `/new`, `/reset` | Bắt đầu phiên mới (xoá ngữ cảnh hội thoại cũ) |
-| `/help` | Danh sách lệnh |
-| `/info`, `/about` | Bot làm được gì / giới thiệu |
-| `/migrate` | Xem mẫu lệnh chuyển PDK |
-| `/feedback <nội dung>` | Gửi góp ý cho đội phát triển |
-| `/cancel` | Huỷ yêu cầu đang xử lý |
+Hỗ trợ 3 ngôn ngữ (VI/EN/ZH) — reply theo ngôn ngữ của câu hỏi. Lệnh:
+`/start` (phiên mới), `/help`, `/info`, `/about`, `/migrate`, `/feedback`,
+`/cancel`.
 
-## 3. Một tin nhắn đi qua những đâu?
-
-Điều quan trọng nhất cần hiểu: **AI không tự vận hành hệ thống**. Đứng giữa
-mọi thứ là **BỘ ĐIỀU PHỐI (orchestrator/harness)** — phần mềm do lab tự viết,
-đóng vai trò nhạc trưởng: AI lớn chỉ là *một nhạc công* được gọi lên đúng lúc,
-bên cạnh máy mô phỏng, máy đọc ảnh, bộ nhớ hội thoại...
-
-Toàn bộ chuỗi dưới đây chạy **trong máy chủ của lab**:
+## 3. Luồng xử lý một request
 
 ```
-   Bạn (Telegram)
-        │  tin nhắn / file .cir / ảnh mạch
-        ▼
- ① BOT TELEGRAM ─ nhận tin, tải file/ảnh về
-        ▼
-╔══════════════════════════════════════════════════════════════╗
-║ ② BỘ ĐIỀU PHỐI (HARNESS) — "nhạc trưởng", code chứ không phải AI ║
-║                                                                ║
-║  • kiểm tra quyền + chống spam (mỗi người 1 việc, 5 req/phút)  ║
-║  • nạp ngữ cảnh hội thoại của bạn (bot "nhớ" các câu trước)    ║
-║  • nhờ AI nhỏ đoán ý định (~1s) rồi TỰ QUYẾT chạy luồng nào:   ║
-║        câu hỏi thường / mô phỏng / đọc ảnh / migrate           ║
-║  • gọi từng công cụ theo đúng kịch bản đã lập trình:           ║
-║        ├─ MÁY MÔ PHỎNG ngspice  ← chạy netlist, đo số liệu     ║
-║        ├─ AI LỚN nhìn ảnh       ← chép schematic ra netlist    ║
-║        ├─ MÁY CHUYỂN PDK        ← khi bạn gõ /migrate          ║
-║        └─ AI LỚN (vLLM Qwen3.6-35B, GPU lab) ← soạn câu trả lời║
-║  • ghép kết quả: số liệu sim + nhận xét AI + đồ thị            ║
-║  • ghi log (ai hỏi gì, mất bao lâu) để vận hành hệ thống       ║
-╚══════════════════════════════════════════════════════════════╝
-        ▼
- ③ BOT TELEGRAM ─ gửi lại: văn bản + ảnh đồ thị
+Người dùng (Telegram)
+     │ text / .cir / ảnh
+     ▼
+Telegram Bot adapter ── long-poll getUpdates, tải file/ảnh qua Bot API
+     │ POST /flow/start (nội bộ)
+     ▼
+┌─────────────────────── ORCHESTRATOR (HARNESS) ───────────────────────┐
+│                                                                      │
+│ 1. Admission control   allowlist, 1 request in-flight/chat,          │
+│                        rate limit 5 req/60s/chat, cap 3 flow đồng thời│
+│ 2. Session memory      nạp lịch sử hội thoại của user (SQLite)       │
+│ 3. Intent routing      model nhỏ (qwen2.5-3b, ~1s) phân loại yêu cầu;│
+│                        orchestrator quyết định flow, KHÔNG phải LLM  │
+│ 4. Flow execution      graph các bước cố định (LangGraph), mỗi node  │
+│                        gọi đúng một công cụ:                         │
+│                          • sim-server  POST /simulate (ngspice)      │
+│                          • vLLM        vision transcribe / đánh giá  │
+│                          • migration   API workbench (khi /migrate)  │
+│                          • charts      render PNG từ waveform        │
+│ 5. Response assembly   ghép metrics sim + nhận xét LLM + đồ thị      │
+│ 6. Access logging      1 record/request + 1 record/LLM call          │
+│                        (user, nội dung, TTFT, thinking time, tokens/s)│
+└──────────────────────────────────────────────────────────────────────┘
+     │ text + PNG
+     ▼
+Telegram Bot adapter ── sendMessage / sendPhoto
 ```
 
-### Vì sao cần bộ điều phối, không để AI "tự lo"?
+Cùng orchestrator này phục vụ cả Open WebUI và LINE — mọi kênh đi chung một
+API nên hành vi đồng nhất.
 
-- **Kỷ luật quy trình:** thứ tự "kiểm tra netlist → mô phỏng → đánh giá" là
-  **code cố định**, AI không được tự bỏ bước. Nhờ vậy kết quả lặp lại được và
-  kiểm chứng được — khác với việc hỏi ChatGPT một câu rồi nhận về con số
-  không rõ nguồn.
-- **AI chỉ làm việc AI giỏi:** hiểu ngôn ngữ, đọc ảnh, viết nhận xét. Còn con
-  số (gain, tần số cắt...) do **ngspice đo**, phép chuyển PDK do máy chuyên
-  dụng làm — bộ điều phối là người chia việc và ráp kết quả lại.
-- **Công bằng & an toàn:** chính bộ điều phối (chứ không phải AI) chặn spam,
-  giới hạn 3 yêu cầu đồng thời trên GPU, ghi log, và giữ mọi dữ liệu trong
-  máy chủ lab.
-- **Dễ mở rộng:** muốn thêm khả năng mới (một máy đo khác, một flow mới) chỉ
-  cần dạy bộ điều phối một "kịch bản" mới — không phải đụng vào AI.
+### Vai trò của harness — tại sao không để LLM tự chạy
 
-Vài điều đáng biết thêm:
+1. **Determinism.** Trình tự lint → simulate → evaluate là code, không phải
+   quyết định của model. Cùng một netlist luôn đi qua cùng một pipeline —
+   kết quả tái lập được, debug được từng bước.
+2. **Grounding.** Mọi con số trong câu trả lời (gain, tần số cắt...) đến từ
+   output của ngspice, được truyền vào prompt của LLM ở bước đánh giá. LLM
+   không được phép tự sinh số đo; nếu sim lỗi, hệ thống báo lỗi thay vì để
+   model "điền số hợp lý".
+3. **Resource governance.** Guard chống spam, cap concurrency trên GPU,
+   timeout — tất cả enforce ở tầng harness, độc lập với model. Model bị thay
+   thế thì các bảo đảm này không đổi.
+4. **Observability.** Harness ghi access log có cấu trúc cho từng request và
+   từng lần gọi LLM (ai gọi, tốn bao nhiêu token, TTFT, thời gian reasoning)
+   — xem được qua Grafana hoặc trực tiếp file JSONL.
+5. **Extensibility.** Thêm năng lực mới = đăng ký một flow mới vào registry
+   (một module Python); router, engine, API tự nhận diện. Không đụng model,
+   không đụng các flow đang chạy.
 
-- **AI nhỏ + AI lớn:** việc "đoán ý định" dùng một mô hình nhỏ chạy trong ~1
-  giây; chỉ phần trả lời thật sự mới dùng mô hình lớn 35 tỷ tham số. Nhờ vậy
-  bot phản hồi nhanh mà vẫn trả lời chất lượng.
-- **Mô hình lớn "suy nghĩ" trước khi trả lời** (reasoning model), nên câu trả
-  lời khó có thể mất 30 giây – vài phút. Bot hiện trạng thái "đang gõ..." trong
-  lúc đó.
-- **Số liệu là thật:** gain, tần số cắt, đồ thị... lấy từ ngspice chạy đúng
-  netlist của bạn, không phải AI bịa ra. Nếu mô phỏng lỗi, bot nói thẳng lỗi
-  gì thay vì chế số.
-- **Ảnh mạch:** bot luôn hiện lại netlist nó đọc được từ ảnh để bạn **kiểm tra
-  trước khi tin kết quả** — AI đọc ảnh tốt nhưng không hoàn hảo. Ảnh nên rõ
-  nét, linh kiện có ghi giá trị (1k, 100n...).
+### Đặc điểm vận hành đáng lưu ý
 
-## 4. Giới hạn sử dụng (để hệ thống công bằng cho mọi người)
+- **Hai tầng model:** intent routing dùng model 3B (~1s); chỉ bước sinh câu
+  trả lời dùng model 35B. Cân bằng latency/chất lượng.
+- **Reasoning model:** Qwen3.6 sinh chuỗi suy luận nội bộ trước khi trả lời —
+  request phức tạp mất 30s–vài phút. Bot giữ trạng thái "typing" trong lúc chờ.
+- **Vision có bước verify:** netlist trích từ ảnh luôn được hiển thị lại
+  nguyên văn trước kết quả mô phỏng. Transcription là suy đoán của model từ
+  ảnh — người dùng chịu trách nhiệm đối chiếu trước khi tin metrics.
 
-Cả lab dùng chung một GPU, nên có vài luật:
+## 4. Giới hạn tài nguyên (enforce tự động)
 
-- **Mỗi người 1 yêu cầu một lúc** — gửi tiếp khi đang xử lý sẽ được nhắc chờ
-  (hoặc `/cancel` để huỷ cái cũ).
-- **Tối đa 5 yêu cầu/phút** cho mỗi người.
-- **Cả hệ thống chạy tối đa 3 yêu cầu cùng lúc** — quá tải thì bot xin lỗi
-  "hệ thống đang bận", thử lại sau một phút.
-- Một yêu cầu chạy quá **5 phút** sẽ bị huỷ (mạch quá phức tạp → chia nhỏ ra).
+| Giới hạn | Giá trị | Hành vi khi vượt |
+|---|---|---|
+| Request đồng thời / chat | 1 | Nhắc chờ hoặc `/cancel` |
+| Rate limit / chat | 5 req / 60s | Thông báo, yêu cầu chờ |
+| Flow đồng thời toàn hệ thống | 3 | Trả "hệ thống bận", không xếp hàng |
+| Timeout / request | 300s | Huỷ, báo người dùng chia nhỏ bài toán |
 
-## 5. Những gì hệ thống CHƯA làm được
+## 5. Giới hạn năng lực hiện tại
 
-- Mô phỏng transistor-level phức tạp / dùng model PDK trong netlist — bộ đo
-  hiện tại hợp nhất với mạch RC/RLC, lọc, khuếch đại cơ bản.
-- Đọc ảnh chụp mờ, vẽ tay nguệch ngoạc — được thì tốt, không thì bot sẽ nói
-  không đọc được (và không bịa).
-- Nhớ ảnh cũ: hỏi tiếp về tấm ảnh đã gửi ở tin trước có thể không chính xác —
-  tốt nhất gửi lại ảnh kèm câu hỏi mới.
-- `/migrate` phụ thuộc máy chủ PDK migration (của nhóm khác) đang bật hay không.
+- Bộ đo của sim-server thiết kế cho mạch passive/analog cơ bản (RC/RLC, lọc,
+  khuếch đại); netlist transistor-level dùng model PDK chưa được hỗ trợ.
+- Vision transcription cần ảnh rõ, linh kiện có nhãn giá trị; ảnh mờ/vẽ tay
+  → hệ thống từ chối thay vì đoán.
+- Hỏi tiếp về ảnh đã gửi: bot nhớ ảnh gần nhất trong phiên — cứ hỏi tiếp bình
+  thường ("nếu đổi C1 trong ảnh thành 200n thì sao?"), hoặc reply trực tiếp
+  vào tin nhắn chứa ảnh. Lưu ý `/start` mở phiên mới sẽ quên ảnh cũ.
+- `/migrate` phụ thuộc PDK Migration Workbench (service ngoài) đang chạy.
 
-## 6. Riêng tư & ghi log
+## 6. Logging & dữ liệu
 
-Mọi yêu cầu được **ghi log trên máy chủ lab** (ai hỏi, hỏi gì, bot trả lời gì,
-mất bao lâu) để vận hành và cải thiện hệ thống. Không dữ liệu nào rời khỏi
-máy chủ của lab — mô hình AI, máy mô phỏng và log đều chạy nội bộ.
+Mỗi request được ghi: kênh, định danh người dùng (Telegram username), nội
+dung hỏi/đáp, flow đã chạy, thời gian tổng, thời gian reasoning, số token,
+tốc độ sinh (tokens/s). Mục đích: vận hành, đánh giá chất lượng, quy hoạch
+tài nguyên. Log nằm trên máy chủ lab (`orchestrator/data/access.jsonl` +
+Grafana), không gửi ra ngoài.
 
-## 7. Gặp vấn đề?
+## 7. Sự cố & liên hệ
 
-- Bot không trả lời → thử `/start` để mở phiên mới.
-- Kết quả có vẻ sai → kiểm tra netlist bot hiện lại (với ảnh), hoặc gửi
-  `/feedback <mô tả lỗi>` — đội phát triển đọc hết.
-- Cần quyền truy cập / bot từ chối phục vụ → liên hệ admin lab
-  (`duong.pt1771@gmail.com`).
+- Bot không phản hồi → `/start` mở phiên mới.
+- Kết quả nghi sai → đối chiếu netlist bot hiển thị (với ảnh), gửi
+  `/feedback <mô tả>`.
+- Cần cấp quyền truy cập → admin lab (`duong.pt1771@gmail.com`).

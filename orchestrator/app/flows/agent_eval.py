@@ -1,7 +1,7 @@
-"""Flow: agentic circuit evaluation driven by a Hermes tool-calling model.
+"""Flow: agentic circuit evaluation driven by a tool-calling agent model.
 
 Unlike `evaluate_circuit` (a fixed analyze -> simulate -> evaluate pipeline that
-always calls the simulator), here a Hermes model classifies each request and
+always calls the simulator), here the agent model classifies each request and
 decides which tool to run:
 
     - simulate_circuit : run a SPICE simulation on the sim server (ngspice)
@@ -170,7 +170,7 @@ def _assistant_dict(m) -> dict:
 
 
 async def _run_tools(state: State, emit=None) -> tuple[list[dict], str | None]:
-    """Drive the Hermes act/observe loop until the model stops calling tools.
+    """Drive the agent act/observe loop until the model stops calling tools.
 
     Returns (messages, final_content): `messages` ends with the tool results
     (the terminal answer turn is NOT appended, so it can be regenerated for
@@ -193,8 +193,8 @@ async def _run_tools(state: State, emit=None) -> tuple[list[dict], str | None]:
         # recites stale metrics (even when nudged) — so the FIRST turn forces
         # a tool call outright; later turns decide freely.
         force = "required" if (step == 0 and state.get("netlist")) else "auto"
-        m = await llm.chat(messages + [lang_msg], TOOLS, oai=llm.hermes_client,
-                           model=config.HERMES_LLM_MODEL, temperature=0.2,
+        m = await llm.chat(messages + [lang_msg], TOOLS, oai=llm.agent_client,
+                           model=config.AGENT_LLM_MODEL, temperature=0.2,
                            tool_choice=force)
         if not m.tool_calls:
             # The fine-tune sometimes answers a netlist request straight from
@@ -250,23 +250,23 @@ def _charts_suffix(state: State) -> str:
 
 def _status(name: str, req: str) -> str:
     if name == "simulate_circuit":
-        return _pick(req, en="Hermes is running the simulation (ngspice)...",
-                     vi="Hermes đang chạy mô phỏng (ngspice)...",
-                     zh="Hermes 正在執行模擬（ngspice）...")
+        return _pick(req, en="Running the simulation (ngspice)...",
+                     vi="Đang chạy mô phỏng (ngspice)...",
+                     zh="正在執行模擬（ngspice）...")
     if name == "plot_waveforms":
-        return _pick(req, en="Hermes is plotting the waveforms...",
-                     vi="Hermes đang vẽ đồ thị waveform...",
-                     zh="Hermes 正在繪製波形圖...")
-    return _pick(req, en=f"Hermes is calling {name}...",
-                 vi=f"Hermes đang gọi {name}...",
-                 zh=f"Hermes 正在呼叫 {name}...")
+        return _pick(req, en="Plotting the waveforms...",
+                     vi="Đang vẽ đồ thị waveform...",
+                     zh="正在繪製波形圖...")
+    return _pick(req, en=f"Calling {name}...",
+                 vi=f"Đang gọi {name}...",
+                 zh=f"正在呼叫 {name}...")
 
 
 async def agent(state: State) -> dict:
     messages, final = await _run_tools(state)
     if final is None:  # step budget hit — get the answer with tools off
-        final = await llm.complete(messages, oai=llm.hermes_client,
-                                   model=config.HERMES_LLM_MODEL, temperature=0.3)
+        final = await llm.complete(messages, oai=llm.agent_client,
+                                   model=config.AGENT_LLM_MODEL, temperature=0.3)
     return {"messages": messages, "answer": final + _charts_suffix(state)}
 
 
@@ -285,8 +285,8 @@ async def stream_run(state: State) -> AsyncIterator[dict]:
     # the tool results, so this regenerates the answer with tokens flowing).
     async for delta in llm.stream_with_thinking(
             messages + [{"role": "system", "content": lang_directive(req)}],
-            temperature=0.3, oai=llm.hermes_client,
-            model=config.HERMES_LLM_MODEL):
+            temperature=0.3, oai=llm.agent_client,
+            model=config.AGENT_LLM_MODEL):
         yield {"type": "delta", "text": delta}
     suffix = _charts_suffix(state)
     if suffix:
@@ -324,9 +324,9 @@ def prepare(message: str, attachments: list[Attachment], params: dict) -> dict:
 
 
 register(FlowSpec(
-    flow_id="hermes_eval",
+    flow_id="agent_eval",
     description=(
-        "Agentic circuit evaluation: a Hermes tool-calling model decides per "
+        "Agentic circuit evaluation: a tool-calling agent model decides per "
         "request whether to run the SPICE simulator, plot waveforms, or answer "
         "directly. It can also MODIFY the circuit on request (change component "
         "values, increase gain, add a stage...) by editing the netlist and "

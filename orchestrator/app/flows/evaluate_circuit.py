@@ -292,7 +292,7 @@ register(FlowSpec(
         "simulation server and assess the results. Use when the user asks to "
         "evaluate, check, analyze or simulate a circuit / netlist / .cir file "
         "without changing it. For requests to modify/tune the circuit use "
-        "hermes_eval instead."
+        "agent_eval instead."
     ),
     params_schema={
         "type": "object",

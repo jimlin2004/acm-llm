@@ -1,6 +1,6 @@
 """Flow: PDK migration of a SPICE netlist via the external migration_pipe API.
 
-This is a SINGLE hermes flow the router hands off to as one unit — it does NOT
+This is a SINGLE orchestrator flow the router hands off to as one unit — it does NOT
 expose migration_pipe's individual stages (extract/map/migrate/simulate/
 validate) as separate agent tools. Inside one node it calls migration_pipe's
 end-to-end endpoint:
@@ -57,6 +57,7 @@ class State(TypedDict, total=False):
     target_pdk: str
     spec_text: str
     netlist: str
+    llm_model_name: str
     answer: str
 
 
@@ -88,7 +89,11 @@ def prepare(message: str, attachments: list[Attachment], params: dict) -> dict:
     target_pdk = params.get("target_pdk") or field("target", "umc180")
 
     spec_text = ""
-    ms = re.search(r"(?is)^\s*spec\s*:\s*(.*?)(?:\n\s*---|\Z)", body)
+    # MULTILINE (m) is essential: `spec:` sits on its own line after
+    # source/target, not at the string start -- without `m` the `^` anchor
+    # never matches it, the spec is silently dropped, and the pipeline falls
+    # back to a stale stored spec (so `pm >= 45` etc. is never evaluated).
+    ms = re.search(r"(?ism)^\s*spec\s*:\s*(.*?)(?:\n\s*---|\Z)", body)
     if ms:
         spec_text = ms.group(1).strip()
 
@@ -116,6 +121,11 @@ def prepare(message: str, attachments: list[Attachment], params: dict) -> dict:
         "target_pdk": target_pdk,
         "spec_text": spec_text,
         "netlist": netlist,
+        # Migration LLM: default to the external cloud model
+        # (config.MIGRATION_LLM_MODEL, e.g. gpt-5-mini) so the local vLLM on
+        # GPU1 isn't tied up by the heavy migration generation; the Telegram
+        # /model selector can still override per-chat via params.
+        "llm_model_name": params.get("llm_model_name") or config.MIGRATION_LLM_MODEL,
     }
 
 
@@ -129,34 +139,150 @@ async def _fetch_chart(client: httpx.AsyncClient, pid: str, rel: str) -> str | N
                              params={"path": rel})
         if r.status_code == 200 and r.content[:8] == b"\x89PNG\r\n\x1a\n":
             b64 = base64.b64encode(r.content).decode()
-            return f"![{rel}](data:image/png;base64,{b64})"
+            # Empty alt: the Telegram adapter uses the alt as the photo caption,
+            # and the raw artifact path (e.g. simulation/plots/ac_gain_response.png)
+            # is noise to the user. No alt -> no caption / clean WebUI render.
+            return f"![](data:image/png;base64,{b64})"
     except Exception:
         pass
     return None
 
 
+async def _fetch_artifact_text(client: httpx.AsyncClient, pid: str,
+                               rel: str) -> str | None:
+    """Fetch a text artifact's content from a pipeline run.
+
+    The `/artifact` endpoint returns `{"content": "..."}` for text files."""
+    try:
+        r = await client.get(_api(f"/api/pipeline/runs/{pid}/artifact"),
+                             params={"path": rel})
+        if r.status_code == 200:
+            return r.json().get("content")
+    except Exception:
+        pass
+    return None
+
+
+def _netlist_attachment(content: str, data: dict, state: "State") -> str:
+    """Embed the migrated netlist as a data-URI link the adapters turn into a
+    real downloadable file (Telegram -> sendDocument, Open WebUI -> a download
+    link). This is what actually hands the user the migrated TARGET netlist,
+    not just the summary report."""
+    tgt = data.get("target_pdk_id") or state.get("target_pdk") or "target"
+    fname = f"migrated_{tgt}.sp"
+    b64 = base64.b64encode(content.encode("utf-8")).decode()
+    label = _pick(state.get("user_request", ""),
+                  en="📎 **Migrated netlist:**",
+                  vi="📎 **Netlist đã migrate:**",
+                  zh="📎 **遷移後的 netlist：**")
+    return f"{label} [{fname}](data:text/x-spice;base64,{b64})"
+
+
+def _fmt_hz(hz) -> str | None:
+    """Human-friendly frequency (21377787 -> '21.38 MHz')."""
+    try:
+        hz = float(hz)
+    except (TypeError, ValueError):
+        return None
+    for unit, div in (("GHz", 1e9), ("MHz", 1e6), ("kHz", 1e3)):
+        if abs(hz) >= div:
+            return f"{hz / div:.2f} {unit}"
+    return f"{hz:.1f} Hz"
+
+
+# Internal, config-driven notices that are noise to the end user (the Qwen-VLM
+# visual check is disabled by design; those skip reasons shouldn't surface).
+_HIDDEN_WARNING_SUBSTR = ("vlm", "disabled_by_config")
+
+
+def _visible_warnings(warnings) -> list:
+    out = []
+    for w in warnings or []:
+        if any(s in str(w).lower() for s in _HIDDEN_WARNING_SUBSTR):
+            continue
+        out.append(w)
+    return out
+
+
+def _metrics_line(data: dict, req: str) -> str | None:
+    """One-line measured AC metrics (gain / UGF / phase margin) from the
+    simulation stage -- the concrete evaluation, straight from HSPICE."""
+    pm = (data.get("simulation") or {}).get("parsed_metrics") or {}
+    parts = []
+    if pm.get("gain_db") is not None:
+        parts.append(f"gain {float(pm['gain_db']):.1f} dB")
+    ugf = _fmt_hz(pm.get("bandwidth_hz") or pm.get("unity_gain_frequency_hz"))
+    if ugf:
+        parts.append(f"UGF {ugf}")
+    if pm.get("phase_margin_deg") is not None:
+        parts.append(f"PM {float(pm['phase_margin_deg']):.1f}°")
+    if not parts:
+        return None
+    joined = " · ".join(parts)
+    return _pick(req,
+                 en=f"- **Measured:** {joined}",
+                 vi=f"- **Số đo:** {joined}",
+                 zh=f"- **量測值:** {joined}")
+
+
+def _spec_lines(data: dict, req: str) -> list:
+    """Per-spec pass/fail verdicts (e.g. gain>=60 -> 67.0 pass)."""
+    sc = (data.get("validation") or {}).get("spec_compliance") or {}
+    items = sc.get("items") or []
+    if not items:
+        return []
+    head = _pick(req,
+                 en="- **Spec check:**",
+                 vi="- **Kiểm tra spec:**",
+                 zh="- **規格檢查:**")
+    out = [head]
+    for it in items[:8]:
+        mark = "✅" if it.get("status") == "pass" else "❌"
+        actual = it.get("actual")
+        try:
+            actual = f"{float(actual):.1f}"
+        except (TypeError, ValueError):
+            actual = str(actual)
+        unit = it.get("unit") or ""
+        out.append(f"  - {mark} `{it.get('name')} {it.get('operator')} "
+                   f"{it.get('target')}` → {actual} {unit}".rstrip())
+    return out
+
+
 def _report(data: dict, charts: list, req: str = "") -> str:
-    status = data.get("final_status") or data.get("pipeline_status") or "?"
     mig = data.get("migration") or {}
     val = data.get("validation") or {}
     src, tgt = data.get("source_pdk_id"), data.get("target_pdk_id")
+    # Friendly outcome only: the raw pipeline status (e.g. completed_with_warnings)
+    # and the internal dry_run flag are noise/confusing to the end user — the
+    # migration ✅/❌ plus the per-spec check below say everything that matters.
+    outcome = (_pick(req, en="- **Migration:** ✅ success",
+                     vi="- **Migrate:** ✅ thành công",
+                     zh="- **遷移:** ✅ 成功")
+               if mig.get("success") else
+               _pick(req, en="- **Migration:** ❌ failed",
+                     vi="- **Migrate:** ❌ thất bại",
+                     zh="- **遷移:** ❌ 失敗"))
     lines = [_pick(req,
                    en=f"### Migration result `{src}` → `{tgt}`",
                    vi=f"### Kết quả migrate `{src}` → `{tgt}`",
                    zh=f"### Migrate 結果 `{src}` → `{tgt}`"),
-             _pick(req,
-                   en=f"- **Pipeline status:** `{status}`",
-                   vi=f"- **Trạng thái pipeline:** `{status}`",
-                   zh=f"- **Pipeline 狀態:** `{status}`"),
-             f"- **Migration:** {'✅' if mig.get('success') else '❌'} "
-             f"(dry_run={mig.get('dry_run')})"]
+             outcome]
+    # Concrete evaluation: measured metrics + per-spec pass/fail (from HSPICE +
+    # numeric validation -- the migration LLM only rewrites the netlist).
+    ml = _metrics_line(data, req)
+    if ml:
+        lines.append(ml)
+    lines += _spec_lines(data, req)
     findings = val.get("findings") or []
     if findings:
-        lines.append("- **Validation findings:**")
+        lines.append(_pick(req, en="- **Validation findings:**",
+                           vi="- **Ghi chú validation:**",
+                           zh="- **驗證說明:**"))
         lines += [f"  - {f}" for f in findings[:8]]
     if val.get("error"):
         lines.append(f"- **Validation:** `{val['error']}`")
-    for w in (data.get("warnings") or [])[:5]:
+    for w in _visible_warnings(data.get("warnings"))[:5]:
         lines.append(f"- ⚠️ {w}")
     body = "\n".join(lines)
     if charts:
@@ -164,8 +290,68 @@ def _report(data: dict, charts: list, req: str = "") -> str:
     return body
 
 
+async def _preflight(client: httpx.AsyncClient, state: State) -> dict | None:
+    """Ask migration_pipe whether every device in the netlist is mappable for
+    this PDK pair (deterministic, no LLM). Returns the check dict, or None if
+    the endpoint is unavailable (older backend) so the caller just proceeds."""
+    try:
+        r = await client.post(_api("/api/migration/preflight"), json={
+            "netlist": state["netlist"],
+            "source_pdk_id": state["source_pdk"],
+            "target_pdk_id": state["target_pdk"],
+        })
+        if r.status_code == 404:
+            return None
+        return r.json()
+    except Exception:
+        return None
+
+
+def _unsupported_message(pf: dict, req: str) -> str:
+    """Localized, user-facing note explaining why we won't migrate this yet."""
+    src, tgt = pf.get("source_pdk"), pf.get("target_pdk")
+    unsupported = pf.get("unsupported_devices") or []
+    if pf.get("reason") == "no_mapping_table":
+        return _pick(
+            req,
+            en=f"⚠️ Migration `{src}` → `{tgt}` isn't supported yet: there's no "
+               f"device mapping table for this PDK pair.",
+            vi=f"⚠️ Chưa hỗ trợ migrate `{src}` → `{tgt}`: chưa có bảng mapping "
+               f"device cho cặp PDK này.",
+            zh=f"⚠️ 尚未支援 `{src}` → `{tgt}` 遷移：此 PDK 配對沒有元件對應表。")
+    if unsupported:
+        listing = ", ".join(f"`{d}`" for d in unsupported)
+        return _pick(
+            req,
+            en=(f"⚠️ This circuit can't be migrated `{src}` → `{tgt}` yet.\n\n"
+                f"Unsupported device(s): {listing}\n\n"
+                f"Only devices present in the mapping table can be migrated — "
+                f"support for more device/circuit types is being added."),
+            vi=(f"⚠️ Mạch này chưa migrate được `{src}` → `{tgt}`.\n\n"
+                f"Device chưa hỗ trợ: {listing}\n\n"
+                f"Chỉ những device đã có trong bảng mapping mới migrate được — "
+                f"các loại device/mạch khác đang được bổ sung dần."),
+            zh=(f"⚠️ 此電路尚無法遷移 `{src}` → `{tgt}`。\n\n"
+                f"不支援的元件：{listing}\n\n"
+                f"只有對應表中的元件才能遷移，其他元件/電路型別正在陸續新增。"))
+    return _pick(
+        req,
+        en=f"⚠️ Can't confirm migration support for `{src}` → `{tgt}`: "
+           f"{pf.get('message', '')}",
+        vi=f"⚠️ Chưa xác nhận được khả năng migrate `{src}` → `{tgt}`: "
+           f"{pf.get('message', '')}",
+        zh=f"⚠️ 無法確認 `{src}` → `{tgt}` 的遷移支援：{pf.get('message', '')}")
+
+
 async def migrate(state: State) -> dict:
     async with httpx.AsyncClient(timeout=config.MIGRATION_TIMEOUT) as client:
+        # 0) pre-flight: can we actually migrate this netlist for this PDK pair?
+        #    If a device isn't mappable yet, tell the user instead of running
+        #    the whole (slow) pipeline and returning a half-migrated netlist.
+        pf = await _preflight(client, state)
+        if pf is not None and not pf.get("supported", True):
+            return {"answer": _unsupported_message(pf, state.get("user_request", ""))}
+
         # 1) upload netlist under a unique name so concurrent runs don't clash
         fname = f"req_{uuid.uuid4().hex}.cir"
         files = {"netlist_file": (fname, state["netlist"], "text/plain")}
@@ -183,6 +369,8 @@ async def migrate(state: State) -> dict:
             "llm_provider": config.MIGRATION_LLM_PROVIDER,
             "image_validation_enabled": False,
         }
+        if state.get("llm_model_name"):
+            payload["llm_model_name"] = state["llm_model_name"]
         r = await client.post(_api("/api/pipeline/run"), json=payload)
         data = r.json()
 
@@ -197,7 +385,31 @@ async def migrate(state: State) -> dict:
                 if c:
                     charts.append(c)
 
-    return {"answer": _report(data, charts, state.get("user_request", ""))}
+        # 4) fetch the migrated TARGET netlist so the user gets the actual file,
+        #    not just the summary. Only when migration succeeded (a failed run
+        #    has no usable target netlist to hand back).
+        file_md = ""
+        mig = data.get("migration") or {}
+        if pid and mig.get("success"):
+            # The migration service stores this artifact path as an ABSOLUTE
+            # path; the artifact endpoint only accepts a run-relative path, so
+            # strip the run_dir prefix (fall back to the fixed write location).
+            raw = (mig.get("artifacts") or {}).get("migrated_netlist") or ""
+            run_dir = data.get("run_dir") or ""
+            if raw and run_dir and raw.startswith(run_dir):
+                rel = raw[len(run_dir):].lstrip("/")
+            elif raw and not raw.startswith("/"):
+                rel = raw
+            else:
+                rel = "migration/migrated_full_netlist.sp"
+            content = await _fetch_artifact_text(client, pid, rel)
+            if content and content.strip():
+                file_md = _netlist_attachment(content, data, state)
+
+    answer = _report(data, charts, state.get("user_request", ""))
+    if file_md:
+        answer += "\n\n" + file_md
+    return {"answer": answer}
 
 
 async def stream_run(state: State) -> AsyncIterator[dict]:

@@ -14,13 +14,13 @@ ROUTER_LLM_BASE_URL = os.environ.get("ROUTER_LLM_BASE_URL") or LLM_BASE_URL
 ROUTER_LLM_API_KEY = os.environ.get("ROUTER_LLM_API_KEY") or LLM_API_KEY
 ROUTER_LLM_MODEL = os.environ.get("ROUTER_LLM_MODEL") or LLM_MODEL
 
-# Hermes — separate local vLLM endpoint serving a tool-calling model, used by
-# the agentic `hermes_eval` flow (it classifies each request and decides which
-# tool to run). Must be a vLLM started with a Hermes tool-call parser. Falls
+# Agent — OpenAI-compatible endpoint serving a tool-calling model, used by
+# the agentic `agent_eval` flow (it classifies each request and decides which
+# tool to run). Any endpoint with reliable function calling works. Falls
 # back to the main LLM so the flow still loads if the tier is not configured.
-HERMES_LLM_BASE_URL = os.environ.get("HERMES_LLM_BASE_URL") or LLM_BASE_URL
-HERMES_LLM_API_KEY = os.environ.get("HERMES_LLM_API_KEY") or LLM_API_KEY
-HERMES_LLM_MODEL = os.environ.get("HERMES_LLM_MODEL") or LLM_MODEL
+AGENT_LLM_BASE_URL = os.environ.get("AGENT_LLM_BASE_URL") or LLM_BASE_URL
+AGENT_LLM_API_KEY = os.environ.get("AGENT_LLM_API_KEY") or LLM_API_KEY
+AGENT_LLM_MODEL = os.environ.get("AGENT_LLM_MODEL") or LLM_MODEL
 
 # Simulation server (contract in ../sim-api.openapi.yaml).
 # Default points at the bundled mock until a real sim server is configured.
@@ -35,6 +35,10 @@ SIM_RETRIES = int(os.environ.get("SIM_RETRIES", "1"))
 MIGRATION_API_URL = os.environ.get("MIGRATION_API_URL", "http://host.docker.internal:5000")
 MIGRATION_DRY_RUN = os.environ.get("MIGRATION_DRY_RUN", "true").lower() != "false"
 MIGRATION_LLM_PROVIDER = os.environ.get("MIGRATION_LLM_PROVIDER", "openai")
+# Default migration model. gpt-5-mini (external OpenAI cloud) keeps the heavy
+# migration generation off the local vLLM (GPU1); a per-chat /model override
+# still wins. Set to "qwen3.6-35b-a3b" to route migration back to the vLLM.
+MIGRATION_LLM_MODEL = os.environ.get("MIGRATION_LLM_MODEL", "gpt-5-mini")
 MIGRATION_TIMEOUT = float(os.environ.get("MIGRATION_TIMEOUT", "1200"))
 
 # Where checkpoints + thread metadata live (mounted volume)
@@ -51,6 +55,18 @@ TELEGRAM_ALLOWED_CHAT_IDS = frozenset(
 # Per-chat rate limit for the Telegram bot: N messages per WINDOW seconds.
 TELEGRAM_RATE_N = int(os.environ.get("TELEGRAM_RATE_N", "5"))
 TELEGRAM_RATE_WINDOW = float(os.environ.get("TELEGRAM_RATE_WINDOW", "60"))
+
+# --- LINE adapter (parity with Telegram) ------------------------------------
+LINE_ALLOWED_USER_IDS = frozenset(
+    x for x in os.environ.get("LINE_ALLOWED_USER_IDS", "").split(",") if x.strip()
+)
+LINE_RATE_N = int(os.environ.get("LINE_RATE_N", "5"))
+LINE_RATE_WINDOW = float(os.environ.get("LINE_RATE_WINDOW", "60"))
+# Public HTTPS base (the cloudflared tunnel) used to host chart PNGs / files
+# LINE can only reference by URL. Updated alongside the webhook when the
+# quick-tunnel URL rotates; the webhook handler also auto-captures it from the
+# inbound request Host when it looks like a trycloudflare hostname.
+LINE_PUBLIC_BASE = os.environ.get("LINE_PUBLIC_BASE", "").rstrip("/")
 
 # Shared assistant persona — every chat-style prompt (text or vision) must use
 # the same identity so replies don't drift between paths.

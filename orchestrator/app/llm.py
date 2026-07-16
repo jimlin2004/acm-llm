@@ -16,9 +16,9 @@ from . import access_log, config
 client = AsyncOpenAI(base_url=config.LLM_BASE_URL, api_key=config.LLM_API_KEY)
 fast_client = AsyncOpenAI(base_url=config.ROUTER_LLM_BASE_URL,
                           api_key=config.ROUTER_LLM_API_KEY)
-# Tool-calling model on its own vLLM endpoint (the hermes_eval agent flow).
-hermes_client = AsyncOpenAI(base_url=config.HERMES_LLM_BASE_URL,
-                            api_key=config.HERMES_LLM_API_KEY)
+# Tool-calling model on its own endpoint (the agent_eval flow).
+agent_client = AsyncOpenAI(base_url=config.AGENT_LLM_BASE_URL,
+                           api_key=config.AGENT_LLM_API_KEY)
 
 
 def _normalize(messages: list[dict]) -> list[dict]:
@@ -27,7 +27,7 @@ def _normalize(messages: list[dict]) -> list[dict]:
     Qwen3.6's chat template rejects any system message that is not the very
     first message (400 "System message must be at the beginning"), but several
     callers deliberately append directives LAST for recency (the language pin,
-    the hermes tool nudges). A trailing user-role instruction keeps that
+    the agent tool nudges). A trailing user-role instruction keeps that
     recency and is legal for every template.
     """
     return [{**m, "role": "user"} if m.get("role") == "system" and i > 0 else m

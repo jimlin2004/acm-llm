@@ -1,8 +1,8 @@
-"""Telegram Bot -> hermes orchestrator (long polling).
+"""Telegram Bot -> orchestrator (long polling).
 
 Unlike the old LINE webhook, this needs NO public URL / tunnel / TLS /
 signature check: a background task polls getUpdates and replies via
-sendMessage. Thin transport adapter only — hermes picks the flow/tools.
+sendMessage. Thin transport adapter only — the orchestrator picks the flow/tools.
 
 Charts: the flows embed rendered charts as inline
 `![title](data:image/png;base64,...)` markdown. Telegram can't render inline
@@ -25,6 +25,7 @@ Env: TELEGRAM_BOT_TOKEN (from @BotFather).
 
 import asyncio
 import base64
+import html
 import logging
 import os
 import re
@@ -33,7 +34,7 @@ from collections import deque
 
 import httpx
 
-from . import config
+from . import chat_core, config
 
 log = logging.getLogger("telegram")
 
@@ -46,6 +47,9 @@ _MAX_LEN = 4000  # Telegram hard limit is 4096 chars per text message
 _MAX_CAPTION = 1024  # Telegram hard limit for a photo caption
 # ![alt](url) — capture alt + url so charts can be re-sent as real photos.
 _MD_IMG = re.compile(r"!\[([^\]]*)\]\(([^)]*)\)")
+# [name](data:...) NOT preceded by `!` — a downloadable file (e.g. the migrated
+# netlist) the flow embeds as a data URI; sent to Telegram as a real document.
+_MD_FILE = re.compile(r"(?<!!)\[([^\]]+)\]\((data:[^)]+)\)")
 
 # The circuit flows read the netlist from `attachments`, not the message body.
 # A user pastes a netlist straight into the chat, so pull it back out and hand
@@ -75,6 +79,13 @@ def _detect_lang(text: str) -> str:
 
 
 _chat_lang: dict[int, str] = {}       # chat_id -> last language seen ("vi/zh/en")
+# Hidden `/model` selector: chat_id -> migrate model id. "" / absent = the
+# pipeline default (local Qwen on vLLM). In-memory only, so an orchestrator
+# restart drops everyone back to the local model. Not registered in the command
+# menu / not shown in /help — only someone who knows to type /model can use it.
+_chat_model: dict[int, str] = {}
+_MODEL_LOCAL = "qwen3.6-35b-a3b"     # local vLLM on GPU1 (explicit override)
+_MODEL_EXTERNAL = "gpt-5-mini"        # external OpenAI cloud model (now default)
 _ANALYZE_PROMPT = {                    # caption-less upload, per chat language
     "vi": "Phân tích mạch này",
     "zh": "分析這個電路",
@@ -416,6 +427,21 @@ def _split_images(text: str):
     return text, images
 
 
+def _split_files(text: str):
+    """Return (clean_text, [(filename, data_uri), ...]).
+
+    Pulls every [name](data:...) file link (e.g. the migrated netlist) out of
+    the answer so it can be sent as a real Telegram document; the remaining
+    prose is tidied for a text message. Run AFTER _split_images so an image's
+    ![..](data:..) has already been removed and isn't misread as a file.
+    """
+    text = text or ""
+    files = [(m.group(1), m.group(2)) for m in _MD_FILE.finditer(text)]
+    text = _MD_FILE.sub("", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text, files
+
+
 def _decode_data_uri(url: str):
     """data:image/png;base64,<b64> -> (raw_bytes, ext). None if not a data URI."""
     if not url.startswith("data:"):
@@ -460,9 +486,54 @@ async def _send_photo(client: httpx.AsyncClient, chat_id: int,
         return False
 
 
+async def _send_document(client: httpx.AsyncClient, chat_id: int,
+                         filename: str, data_uri: str):
+    """Send a data-URI file (e.g. the migrated netlist) as a real Telegram
+    document so the user can download the actual target .sp, not paste text."""
+    decoded = _decode_data_uri(data_uri)
+    if decoded is None:
+        log.error("sendDocument: undecodable data URI for %s", filename)
+        return False
+    raw, _ = decoded
+    try:
+        files = {"document": (filename or "file", raw,
+                              "application/octet-stream")}
+        r = await client.post(f"{API}/sendDocument",
+                              data={"chat_id": str(chat_id)}, files=files)
+        if r.status_code >= 300:
+            log.error("sendDocument failed %s: %s", r.status_code, r.text[:300])
+            return False
+        return True
+    except Exception:
+        log.exception("sendDocument error")
+        return False
+
+
 def _chunks(text: str, n: int = _MAX_LEN):
     for i in range(0, len(text), n):
         yield text[i:i + n]
+
+
+# --- Markdown -> Telegram HTML ----------------------------------------------
+# The flows emit GitHub-flavoured markdown (### headers, **bold**, `code`,
+# `- ` bullets). Telegram can't render that literally, so the raw ** and ###
+# showed up as noise. Convert to Telegram's HTML subset (<b>/<code>), which is
+# far more robust than MarkdownV2 (no need to escape . - ( ) ! etc.).
+_HDR_RE = re.compile(r"(?m)^[ \t]{0,3}#{1,6}[ \t]*(.+?)[ \t]*#*[ \t]*$")
+_BOLD_RE = re.compile(r"\*\*([^\n]+?)\*\*")
+_CODE_RE = re.compile(r"`([^`\n]+)`")
+_BULLET_RE = re.compile(r"(?m)^([ \t]*)[-*][ \t]+")
+
+
+def _to_tg_html(text: str) -> str:
+    """Render flow markdown as Telegram HTML. Escape &<> first so content can't
+    break the markup, then map code/bold/headers/bullets to tags/glyphs."""
+    t = html.escape(text or "", quote=False)          # &, <, > -> entities
+    t = _CODE_RE.sub(lambda m: f"<code>{m.group(1)}</code>", t)
+    t = _BOLD_RE.sub(lambda m: f"<b>{m.group(1)}</b>", t)
+    t = _HDR_RE.sub(lambda m: f"<b>{m.group(1)}</b>", t)   # no headers in TG
+    t = _BULLET_RE.sub(lambda m: f"{m.group(1)}• ", t)    # nicer bullets
+    return t
 
 
 async def _typing_loop(client: httpx.AsyncClient, chat_id: int):
@@ -485,7 +556,12 @@ async def _typing_loop(client: httpx.AsyncClient, chat_id: int):
 async def _send(client: httpx.AsyncClient, chat_id: int, text: str):
     for ch in _chunks(text):
         r = await client.post(f"{API}/sendMessage",
-                              json={"chat_id": chat_id, "text": ch})
+                              json={"chat_id": chat_id, "text": _to_tg_html(ch),
+                                    "parse_mode": "HTML",
+                                    "disable_web_page_preview": True})
+        if r.status_code >= 300:      # malformed HTML (rare) -> plain-text retry
+            r = await client.post(f"{API}/sendMessage",
+                                  json={"chat_id": chat_id, "text": ch})
         log.info("tg out chat_id=%s status=%s resp=%s",
                  chat_id, r.status_code, r.text[:200])
 
@@ -528,7 +604,7 @@ async def _run_and_reply(client: httpx.AsyncClient, chat_id: int,
         if photos:
             image = await _download_photo(client, photos)
             if image is None:
-                await _send(client, chat_id, _msg(chat_id, "photo_failed"))
+                await _send(client, chat_id, _msg(chat_id, "media_failed"))
                 return
         # No caption but a netlist file / schematic photo was uploaded: route
         # the analysis prompt in the language this chat has been using, so the
@@ -547,8 +623,14 @@ async def _run_and_reply(client: httpx.AsyncClient, chat_id: int,
                          "name": " ".join(filter(None, [
                              tg_user.get("first_name"),
                              tg_user.get("last_name")])) or None}}
-        if text.lstrip().startswith("/migrate"):
+        is_migrate = text.lstrip().startswith("/migrate")
+        if is_migrate:
             flow_body["flow_id"] = "migrate_circuit"
+            # Route to the model this chat picked via the hidden /model command
+            # (empty = leave it to the pipeline default, i.e. local qwen/vLLM).
+            chosen = _chat_model.get(chat_id)
+            if chosen:
+                flow_body["params"] = {"llm_model_name": chosen}
         if image is not None:                         # schematic photo
             flow_body["images"] = [image]
         if attachment is not None:                    # uploaded .cir document
@@ -558,10 +640,13 @@ async def _run_and_reply(client: httpx.AsyncClient, chat_id: int,
             if netlist:
                 flow_body["attachments"] = [
                     {"name": "circuit.cir", "content": netlist}]
-        # 5-min cap so a stuck flow (vLLM/sim hang) fails loudly instead of
-        # leaving the user waiting forever; 10s to connect to the local API.
+        # /migrate runs the LLM migration pipeline (minutes, sometimes >5 min
+        # under vLLM load or with a reasoning cloud model), so give it the
+        # pipeline's own budget plus a margin; other flows keep the short 5-min
+        # safety cap so a stuck chat fails loudly. 10s to connect either way.
+        flow_timeout = (config.MIGRATION_TIMEOUT + 60.0) if is_migrate else 300.0
         async with httpx.AsyncClient(
-                timeout=httpx.Timeout(300.0, connect=10.0)) as c:
+                timeout=httpx.Timeout(flow_timeout, connect=10.0)) as c:
             r = await c.post(f"{SELF}/flow/start", json=flow_body)
         if r.status_code >= 300:                       # HTTP error != empty answer
             raise RuntimeError(f"flow HTTP {r.status_code}: {r.text[:200]}")
@@ -575,18 +660,83 @@ async def _run_and_reply(client: httpx.AsyncClient, chat_id: int,
     finally:
         typing.cancel()
     reply, images = _split_images(answer)
-    log.info("tg reply chat_id=%s len=%s images=%s preview=%r",
-             chat_id, len(reply), len(images), reply[:120])
+    reply, files = _split_files(reply)
+    log.info("tg reply chat_id=%s len=%s images=%s files=%s preview=%r",
+             chat_id, len(reply), len(images), len(files), reply[:120])
     if reply:
         await _send(client, chat_id, reply)
     failed = 0
     for alt, url in images:
         if not await _send_photo(client, chat_id, alt, url):
             failed += 1
-    if not reply and not images:
+    for fname, uri in files:
+        if not await _send_document(client, chat_id, fname, uri):
+            failed += 1
+    if not reply and not images and not files:
         await _send(client, chat_id, _msg(chat_id, "empty"))
     if failed:
         await _send(client, chat_id, _msg(chat_id, "charts_failed", n=failed))
+
+
+_MODEL_LABELS = {
+    _MODEL_LOCAL: "Local · Qwen (vLLM)",
+    _MODEL_EXTERNAL: "External · gpt-5-mini (OpenAI)",
+}
+
+
+def _model_label(model_id: str) -> str:
+    return _MODEL_LABELS.get(model_id or _MODEL_LOCAL, _MODEL_LABELS[_MODEL_LOCAL])
+
+
+async def _send_model_menu(client: httpx.AsyncClient, chat_id: int):
+    """Reply with an inline keyboard to pick the /migrate model (hidden cmd)."""
+    current = _chat_model.get(chat_id, _MODEL_LOCAL)
+    lang = _chat_lang.get(chat_id, "en")
+    head = {"vi": "Model cho /migrate", "zh": "/migrate 使用的模型"}.get(
+        lang, "Model for /migrate")
+    cur = {"vi": "Đang dùng", "zh": "目前"}.get(lang, "Current")
+    kb = {"inline_keyboard": [[
+        {"text": "🖥️ Local · Qwen", "callback_data": "model:local"},
+        {"text": "☁️ gpt-5-mini", "callback_data": f"model:{_MODEL_EXTERNAL}"},
+    ]]}
+    await client.post(f"{API}/sendMessage", json={
+        "chat_id": chat_id,
+        "text": f"{head}\n{cur}: {_model_label(current)}",
+        "reply_markup": kb})
+
+
+async def _handle_model_callback(client: httpx.AsyncClient, cb: dict):
+    """Apply a /model button press: store the per-chat choice and confirm."""
+    cb_id = cb.get("id")
+    data = cb.get("data") or ""
+    msg = cb.get("message") or {}
+    chat_id = (msg.get("chat") or {}).get("id")
+    mid = msg.get("message_id")
+    if chat_id is not None and data.startswith("model:"):
+        choice = data.split(":", 1)[1]
+        model_id = _MODEL_EXTERNAL if choice == _MODEL_EXTERNAL else _MODEL_LOCAL
+        _chat_model[chat_id] = model_id
+        label = _model_label(model_id)
+        if cb_id:
+            await client.post(f"{API}/answerCallbackQuery", json={
+                "callback_query_id": cb_id, "text": f"✅ {label}"})
+        if mid is not None:
+            await client.post(f"{API}/editMessageText", json={
+                "chat_id": chat_id, "message_id": mid,
+                "text": f"✅ /migrate → {label}"})
+    elif cb_id:
+        await client.post(f"{API}/answerCallbackQuery",
+                          json={"callback_query_id": cb_id})
+
+
+# Single source of truth: use chat_core for the shared texts + parsing so the
+# Telegram and LINE adapters can never drift apart. These override the local
+# copies defined above (kept for now as inline documentation; edit chat_core).
+_MSG = chat_core.MSG
+_detect_lang = chat_core.detect_lang
+_extract_netlist = chat_core.extract_netlist
+_split_images = chat_core.split_images
+_split_files = chat_core.split_files
 
 
 async def poll_forever():
@@ -605,12 +755,17 @@ async def poll_forever():
         offset = None
         while True:
             try:
-                params = {"timeout": 50, "allowed_updates": '["message"]'}
+                params = {"timeout": 50,
+                          "allowed_updates": '["message","callback_query"]'}
                 if offset is not None:
                     params["offset"] = offset
                 r = await client.get(f"{API}/getUpdates", params=params)
                 for upd in r.json().get("result", []):
                     offset = upd["update_id"] + 1
+                    cb = upd.get("callback_query")
+                    if cb:                       # hidden /model button press
+                        asyncio.create_task(_handle_model_callback(client, cb))
+                        continue
                     msg = upd.get("message")
                     if not msg:
                         continue
@@ -679,6 +834,13 @@ async def poll_forever():
                             key = "cancel_none"
                         asyncio.create_task(_send(
                             client, chat_id, _msg(chat_id, key)))
+                        continue
+
+                    # Hidden model selector (not advertised in the command
+                    # menu / help). Handled before the unknown-command guard so
+                    # it isn't rejected as a typo.
+                    if first == "/model":
+                        asyncio.create_task(_send_model_menu(client, chat_id))
                         continue
 
                     # Unknown /commands (typos like "/stảt") carry no intent:
