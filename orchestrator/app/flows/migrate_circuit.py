@@ -15,6 +15,7 @@ Config: MIGRATION_API_URL, MIGRATION_DRY_RUN, MIGRATION_LLM_PROVIDER.
 """
 
 import base64
+import json
 import re
 import uuid
 from typing import AsyncIterator, TypedDict
@@ -161,6 +162,55 @@ async def _fetch_artifact_text(client: httpx.AsyncClient, pid: str,
     except Exception:
         pass
     return None
+
+
+async def _fetch_artifact_json(client: httpx.AsyncClient, pid: str,
+                               rel: str) -> dict | None:
+    """A JSON artifact -- the `/artifact` endpoint hands back the file text in
+    `content`, so parse it."""
+    txt = await _fetch_artifact_text(client, pid, rel)
+    if not txt:
+        return None
+    try:
+        return json.loads(txt)
+    except Exception:
+        return None
+
+
+async def _normalize_v4(data: dict, client: httpx.AsyncClient) -> dict:
+    """Flatten thanglq's v4_thang (FastAPI) pipeline response to the flat shape
+    the report code expects.
+
+    v4 nests each stage under `stages.{migration,simulation,validation}` (each
+    `{status, success, artifacts, ...}`) and no longer inlines `parsed_metrics`
+    or `spec_compliance` -- those live in artifact files. This fetches
+    `validation/metrics_summary.json` (gain/UGF/PM + spec_compliance) and rebuilds
+    `data["migration"|"simulation"|"validation"]`. It's a no-op on the older flat
+    response (no `stages` key), so it stays backward-compatible."""
+    stages = data.get("stages")
+    if not isinstance(stages, dict):
+        return data
+    pid = data.get("pipeline_id")
+    mig = stages.get("migration") or {}
+    sim = stages.get("simulation") or {}
+    parsed_metrics, spec_compliance, findings = {}, {}, []
+    ms = await _fetch_artifact_json(client, pid, "validation/metrics_summary.json")
+    if ms:
+        parsed_metrics = {
+            "gain_db": ms.get("low_freq_gain_db"),
+            "unity_gain_frequency_hz": ms.get("unity_gain_frequency_hz"),
+            "phase_margin_deg": ms.get("phase_margin_deg"),
+        }
+        spec_compliance = ms.get("spec_compliance") or {}
+        findings = ms.get("parse_warnings") or []
+    data = dict(data)
+    data["migration"] = {"success": mig.get("success"),
+                         "artifacts": mig.get("artifacts") or {}}
+    data["simulation"] = {"artifacts": sim.get("artifacts") or {},
+                          "parsed_metrics": parsed_metrics}
+    data["validation"] = {"spec_compliance": spec_compliance,
+                          "findings": findings}
+    return data
 
 
 def _netlist_attachment(content: str, data: dict, state: "State") -> str:
@@ -373,6 +423,10 @@ async def migrate(state: State) -> dict:
             payload["llm_model_name"] = state["llm_model_name"]
         r = await client.post(_api("/api/pipeline/run"), json=payload)
         data = r.json()
+        # thanglq's v4_thang (FastAPI) nests the stages under `stages.*` and
+        # keeps metrics/spec only in artifact files; flatten it back to the
+        # shape the report code expects. No-op on the older flat response.
+        data = await _normalize_v4(data, client)
 
         # 3) pull any real plot images
         charts = []
