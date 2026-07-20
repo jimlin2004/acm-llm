@@ -56,15 +56,8 @@ DATA_DIR = os.environ.get("DATA_DIR", "/data")
 # Global cap on concurrently running flows; excess requests are shed with a
 # polite "busy" reply instead of queueing unboundedly on one GPU.
 MAX_CONCURRENT_FLOWS = int(os.environ.get("MAX_CONCURRENT_FLOWS", "3"))
-# Comma-separated Telegram chat ids allowed to use the bot; empty = everyone.
-TELEGRAM_ALLOWED_CHAT_IDS = frozenset(
-    int(x) for x in os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS", "").split(",")
-    if x.strip().lstrip("-").isdigit())
-# Per-chat rate limit for the Telegram bot: N messages per WINDOW seconds.
-TELEGRAM_RATE_N = int(os.environ.get("TELEGRAM_RATE_N", "5"))
-TELEGRAM_RATE_WINDOW = float(os.environ.get("TELEGRAM_RATE_WINDOW", "60"))
 
-# --- LINE adapter (parity with Telegram) ------------------------------------
+# --- LINE adapter ------------------------------------------------------------
 LINE_ALLOWED_USER_IDS = frozenset(
     x for x in os.environ.get("LINE_ALLOWED_USER_IDS", "").split(",") if x.strip()
 )

@@ -6,7 +6,6 @@ GET  /flow/{thread_id}            current status + state
 GET  /flow?user_id=...            list a user's threads
 """
 
-import asyncio
 import datetime
 import json
 import logging
@@ -25,7 +24,6 @@ from .engine import FlowEngine
 from .memory import ChatMemory
 from .openai_compat import router as openai_router
 from .line_webhook import router as line_router
-from .telegram_bot import poll_forever as telegram_poll
 from .registry import FLOWS, Attachment, MissingParams
 from .flows.evaluate_circuit import lang_directive, _pick
 
@@ -145,11 +143,9 @@ async def lifespan(app: FastAPI):
         await memory.init()
         app.state.memory = memory
         log.info("flows registered: %s", list(FLOWS))
-        tg_task = asyncio.create_task(telegram_poll())
         try:
             yield
         finally:
-            tg_task.cancel()
             await engine.close()
             await memory.close()
 

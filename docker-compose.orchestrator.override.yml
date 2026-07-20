@@ -1,0 +1,8 @@
+# Local deploy override for the new server (not the source of truth).
+# A native sim-server already listens on host 127.0.0.1:9000 on this box, so we
+# publish the Docker sim-server's debug port on 9001 instead. The orchestrator
+# still reaches it as http://sim-server:9000 over app-net — unaffected.
+services:
+  sim-server:
+    ports: !override
+      - "127.0.0.1:9001:9000"

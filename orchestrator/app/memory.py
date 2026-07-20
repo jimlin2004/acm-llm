@@ -10,11 +10,18 @@ Keyed by the flow API's `user_id` (e.g. "telegram:<chat_id>"), so each chat is
 isolated and any frontend that opts in (sends use_memory) gets the same store.
 """
 
+import asyncio
+import logging
+import os
 import re
 import time
 import uuid
 
 import aiosqlite
+
+from . import config
+
+log = logging.getLogger(__name__)
 
 # Chart images are embedded as ![alt](data:image/...;base64,<huge>) — never
 # store the blob (it would bloat the DB and the re-injected prompt); keep only a
@@ -26,8 +33,16 @@ _DATA_IMG = re.compile(r"!\[([^\]]*)\]\(data:[^)]*\)")
 # duplicating it turn after turn. It is regenerated fresh on every run anyway.
 _LINT_BLOCK = re.compile(r"\n*---\n⚠️ \*\*Lint[^\n]*\n(?:- [^\n]*\n?)*")
 _MAX_CONTENT = 4000        # per-message cap kept in the store
-_MAX_TURNS = 16            # most recent turns re-injected as context
+_MAX_TURNS = 16            # most recent turns re-injected verbatim as context
 _MAX_HISTORY_CHARS = 8000  # total char budget for the re-injected history
+
+# Rolling summary: turns that age out of the recent window are folded into a
+# short running summary (via the cheap local router model) instead of being
+# dropped, so a long session keeps continuity without bloating the prompt.
+_SUMMARY_ENABLED = os.environ.get("CHAT_SUMMARY", "1") != "0"
+_SUMMARIZE_AFTER = 8       # fold once this many turns have aged out un-summarized
+_MAX_SUMMARY_CHARS = 1500  # hard cap on the stored rolling summary
+_SUMMARY_PREFIX = "Summary of earlier conversation (for context):\n"
 _MAX_SESSION_IMAGES = 2    # most recent photos remembered per session
 _MAX_SESSION_NETLISTS = 1  # most recent netlist remembered per session
 _MAX_SESSION_SOURCES = 8   # citations kept from the last web-search turn
@@ -50,6 +65,7 @@ class ChatMemory:
     def __init__(self, db_path: str):
         self._db_path = db_path
         self._db: aiosqlite.Connection | None = None
+        self._sum_lock = asyncio.Lock()   # serialize rolling-summary updates
 
     async def init(self):
         self._db = await aiosqlite.connect(self._db_path)
@@ -113,6 +129,15 @@ class ChatMemory:
         await self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_sources_session "
             "ON session_sources(user_id, session_id, id)")
+        # Rolling summary of turns that have aged out of the recent window.
+        # last_msg_id is the highest message id already folded into `summary`.
+        await self._db.execute(
+            """CREATE TABLE IF NOT EXISTS session_summary (
+                   user_id TEXT,
+                   session_id TEXT,
+                   summary TEXT,
+                   last_msg_id INTEGER,
+                   PRIMARY KEY (user_id, session_id))""")
         # Age-based retention + reclaim file space. Cheap on this DB's size.
         now = time.time()
         await self._db.execute(
@@ -127,6 +152,10 @@ class ChatMemory:
         await self._db.execute(
             "DELETE FROM session_sources WHERE ts < ?",
             (now - _RETAIN_MSG_DAYS * 86400,))
+        # Drop summaries whose session has no surviving messages (aged out above).
+        await self._db.execute(
+            "DELETE FROM session_summary WHERE session_id NOT IN "
+            "(SELECT DISTINCT session_id FROM messages)")
         await self._db.commit()
         await self._db.execute("VACUUM")
 
@@ -161,6 +190,9 @@ class ChatMemory:
         await self._db.execute(
             "DELETE FROM session_sources WHERE user_id = ? AND session_id != ?",
             (user_id, sid))
+        await self._db.execute(
+            "DELETE FROM session_summary WHERE user_id = ? AND session_id != ?",
+            (user_id, sid))
         await self._db.commit()
         return sid
 
@@ -171,6 +203,10 @@ class ChatMemory:
             "VALUES (?,?,?,?,?)",
             (user_id, sid, time.time(), role, _clean(content)))
         await self._db.commit()
+        # Fold the ageing tail into the rolling summary in the background so the
+        # reply is never delayed. Once per exchange (the assistant's turn).
+        if _SUMMARY_ENABLED and role == "assistant":
+            asyncio.create_task(self._maybe_summarize(user_id, sid))
 
     async def get_history(self, user_id: str) -> list[dict]:
         """Recent turns of the current session, oldest→newest, char-budgeted."""
@@ -187,7 +223,91 @@ class ChatMemory:
                 break
             out.append({"role": r["role"], "content": r["content"]})
         out.reverse()                               # back to chronological order
+        if _SUMMARY_ENABLED:
+            summary = await self._get_summary(user_id, sid)
+            if summary:                             # older turns, condensed
+                out.insert(0, {"role": "system",
+                               "content": _SUMMARY_PREFIX + summary})
         return out
+
+    async def _get_summary(self, user_id: str, sid: str) -> str:
+        cur = await self._db.execute(
+            "SELECT summary FROM session_summary "
+            "WHERE user_id = ? AND session_id = ?", (user_id, sid))
+        row = await cur.fetchone()
+        return (row["summary"] if row else "") or ""
+
+    async def _maybe_summarize(self, user_id: str, sid: str):
+        """Fold turns that have aged out of the recent window into the rolling
+        summary. Runs in the background; any failure is non-fatal and simply
+        retries on a later turn — the watermark only advances on success."""
+        try:
+            async with self._sum_lock:
+                cur = await self._db.execute(
+                    "SELECT summary, last_msg_id FROM session_summary "
+                    "WHERE user_id = ? AND session_id = ?", (user_id, sid))
+                row = await cur.fetchone()
+                summary = (row["summary"] if row else "") or ""
+                last_id = (row["last_msg_id"] if row else 0) or 0
+                # Lower edge of the recent window kept verbatim by get_history:
+                # the id of the _MAX_TURNS-th newest message in this session.
+                cur = await self._db.execute(
+                    "SELECT id FROM messages "
+                    "WHERE user_id = ? AND session_id = ? "
+                    "ORDER BY id DESC LIMIT 1 OFFSET ?",
+                    (user_id, sid, _MAX_TURNS - 1))
+                edge = await cur.fetchone()
+                if not edge:                        # fewer than _MAX_TURNS turns
+                    return
+                # Turns aged out of the window and not yet summarized.
+                cur = await self._db.execute(
+                    "SELECT id, role, content FROM messages "
+                    "WHERE user_id = ? AND session_id = ? AND id < ? AND id > ? "
+                    "ORDER BY id ASC", (user_id, sid, edge["id"], last_id))
+                pending = await cur.fetchall()
+                if len(pending) < _SUMMARIZE_AFTER:
+                    return
+                new_last = pending[-1]["id"]
+                transcript = "\n".join(
+                    f"{r['role']}: {r['content']}" for r in pending)
+                folded = await self._summarize(summary, transcript)
+                if not folded:                      # LLM unavailable — retry later
+                    return
+                await self._db.execute(
+                    "INSERT INTO session_summary"
+                    "(user_id, session_id, summary, last_msg_id) VALUES (?,?,?,?) "
+                    "ON CONFLICT(user_id, session_id) DO UPDATE SET "
+                    "summary = ?, last_msg_id = ?",
+                    (user_id, sid, folded, new_last, folded, new_last))
+                await self._db.commit()
+        except Exception:
+            log.exception("rolling summary update failed")
+
+    async def _summarize(self, prev_summary: str, transcript: str) -> str:
+        """Merge new turns into the running summary using the cheap local router
+        model. Returns "" on any error so the caller leaves the watermark be."""
+        from . import llm                           # lazy import (avoid cycles)
+        sys_prompt = (
+            "You maintain a running summary of a conversation between a user and "
+            "an electronics/circuit assistant. Merge the new messages into the "
+            "existing summary. Keep it under 150 words, factual and specific: "
+            "the user's goals, circuit details and values, decisions made, and "
+            "any open questions. Preserve still-relevant facts from the existing "
+            "summary. Write in the same language the conversation uses. Output "
+            "ONLY the updated summary, with no preamble.")
+        user_prompt = (
+            f"Existing summary:\n{prev_summary or '(none yet)'}\n\n"
+            f"New messages:\n{transcript}\n\nUpdated summary:")
+        try:
+            txt = await llm.complete(
+                [{"role": "system", "content": sys_prompt},
+                 {"role": "user", "content": user_prompt}],
+                temperature=0.2, max_tokens=400,
+                oai=llm.fast_client, model=config.ROUTER_LLM_MODEL)
+        except Exception:
+            log.exception("summary LLM call failed")
+            return ""
+        return (txt or "").strip()[:_MAX_SUMMARY_CHARS]
 
     async def save_images(self, user_id: str, images: list[dict]):
         """Remember the session's most recent photo(s), newest last. Only the

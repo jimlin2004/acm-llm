@@ -131,9 +131,73 @@ def _headers() -> dict:
             "Content-Type": "application/json"}
 
 
+# --- Markdown -> LINE plain text --------------------------------------------
+# The flows emit GitHub-flavoured markdown (### headers, **bold**, `code`,
+# `- ` bullets, ```fences```, [text](url)). LINE renders none of it, so the raw
+# ##, ** and backticks showed up as noise. Strip the syntax down to clean text
+# (LINE has no rich-text rendering — plain text only).
+_LINE_FENCE_RE = re.compile(r"(?m)^[ \t]*```[^\n]*$")          # ```lang / ```
+_LINE_HDR_RE = re.compile(r"(?m)^[ \t]{0,3}#{1,6}[ \t]*(.+?)[ \t]*#*[ \t]*$")
+_LINE_BOLD_RE = re.compile(r"\*\*([^\n]+?)\*\*")
+_LINE_CODE_RE = re.compile(r"`([^`\n]+)`")
+_LINE_BULLET_RE = re.compile(r"(?m)^([ \t]*)[-*][ \t]+")
+_LINE_LINK_RE = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
+
+
+def _to_line_text(text: str) -> str:
+    """Flatten flow markdown to plain text for LINE (no markdown/HTML support)."""
+    t = text or ""
+    t = _LINE_FENCE_RE.sub("", t)                              # drop code fences
+    t = _LINE_LINK_RE.sub(lambda m: f"{m.group(1)} ({m.group(2)})", t)
+    t = _LINE_CODE_RE.sub(lambda m: m.group(1), t)             # `code` -> code
+    t = _LINE_BOLD_RE.sub(lambda m: m.group(1), t)             # **bold** -> bold
+    t = _LINE_HDR_RE.sub(lambda m: m.group(1), t)              # ### H -> H
+    t = _LINE_BULLET_RE.sub(lambda m: f"{m.group(1)}• ", t)    # -/* -> • bullet
+    t = re.sub(r"\n{3,}", "\n\n", t)                           # tidy blank runs
+    return t.strip()
+
+
+# Sentence enders (Latin + CJK) used to break a long answer on a whole sentence
+# rather than mid-word. `…` and CJK 。！？ included for VI/ZH replies.
+_SENT_END_RE = re.compile(r"[\.!?…。！？]['\"”’)]?(?=\s|$)")
+
+
+def _split_at(s: str, n: int) -> int:
+    """Best index (1..n) to cut `s` so a chunk ends on a natural boundary.
+
+    Preference: paragraph break > line break > sentence end > space > hard cut.
+    Only a message longer than a full LINE limit ever gets a hard cut.
+    """
+    if len(s) <= n:
+        return len(s)
+    window = s[:n]
+    p = window.rfind("\n\n")                       # paragraph
+    if p > 0:
+        return p + 2
+    p = window.rfind("\n")                          # line
+    if p > 0:
+        return p + 1
+    ends = list(_SENT_END_RE.finditer(window))     # end of a sentence
+    if ends:
+        return ends[-1].end()
+    p = window.rfind(" ")                           # word boundary
+    if p > 0:
+        return p + 1
+    return n                                        # one giant token — hard cut
+
+
 def _chunks(text: str, n: int = _MAX_LEN):
-    for i in range(0, len(text), n):
-        yield text[i:i + n]
+    """Yield <=n-char pieces, breaking on sentence/line boundaries where possible
+    so a message never ends mid-sentence."""
+    text = text or ""
+    while len(text) > n:
+        cut = _split_at(text, n)
+        piece = text[:cut].rstrip()
+        if piece:
+            yield piece
+        text = text[cut:].lstrip()
+    if text.strip():
+        yield text.strip()
 
 
 async def _push(uid: str, messages: list):
@@ -416,7 +480,7 @@ async def _run_and_reply(resp: "_Responder", text: str, attachment=None,
     tail = "\n\n".join(links)
     if failed:
         tail = (tail + "\n\n" if tail else "") + _msg(uid, "charts_failed", n=failed)
-    body = "\n\n".join(p for p in (reply, tail) if p)
+    body = "\n\n".join(p for p in (_to_line_text(reply), tail) if p)
     messages: list = [{"type": "text", "text": ch} for ch in _chunks(body)] if body else []
     messages += image_msgs
     if not messages:

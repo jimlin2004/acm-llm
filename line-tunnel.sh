@@ -5,7 +5,7 @@
 set -uo pipefail
 
 PORT=8100
-ENV_FILE=/home/acm_llm/acm-llm/.env
+ENV_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.env"
 CF=~/.local/bin/cloudflared
 LOG=$(mktemp /tmp/cf_XXXXXX.log)
 

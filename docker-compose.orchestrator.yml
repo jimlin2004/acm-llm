@@ -67,16 +67,12 @@ services:
       - LINE_ALLOWED_USER_IDS=${LINE_ALLOWED_USER_IDS:-}
       - LINE_RATE_N=${LINE_RATE_N:-5}
       - LINE_RATE_WINDOW=${LINE_RATE_WINDOW:-60}
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - MIGRATION_API_URL=${MIGRATION_API_URL:-http://host.docker.internal:5000}
       - MIGRATION_DRY_RUN=${MIGRATION_DRY_RUN:-true}
       - MIGRATION_LLM_PROVIDER=${MIGRATION_LLM_PROVIDER:-openai}
       - MIGRATION_LLM_MODEL=${MIGRATION_LLM_MODEL:-gpt-5-mini}
-      # Abuse guards (docs/hardening-plan.md Phase 1)
+      # Abuse guard: global cap on concurrently running flows.
       - MAX_CONCURRENT_FLOWS=${MAX_CONCURRENT_FLOWS:-3}
-      - TELEGRAM_ALLOWED_CHAT_IDS=${TELEGRAM_ALLOWED_CHAT_IDS:-}
-      - TELEGRAM_RATE_N=${TELEGRAM_RATE_N:-5}
-      - TELEGRAM_RATE_WINDOW=${TELEGRAM_RATE_WINDOW:-60}
     ports:
       # NOT 0.0.0.0 — the API has no auth. Loopback for host tools plus the
       # docker bridge gateway so Open WebUI (bridge net) still reaches it via
