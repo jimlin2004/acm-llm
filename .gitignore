@@ -15,3 +15,7 @@ venv/
 *.swp
 *.bak
 *.bak.*
+
+# Migration bundles (chứa secret — không bao giờ commit)
+*.tar.gz
+*.tgz
