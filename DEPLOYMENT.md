@@ -193,6 +193,56 @@ Double-check with `git status --ignored` before pushing.
 - DNS/webhook cutover (LINE `LINE_PUBLIC_BASE`) is the real switch — flip it last.
 - Model weights are the slowest step; pre-download on the new box before cutover.
 
+### Appendix A — Exactly which files to carry over (not in git)
+
+The repo covers all tracked code. These are the things git does **not** hold and that must be
+moved by hand. A ready-made `acm-migration-bundle.tar.gz` (see below) packs the 🔴 + 🟡 items.
+
+**🔴 Required — the stack won't run without them**
+
+| File | Location | Holds |
+|---|---|---|
+| `.env` | `acm-llm/.env` | Every key: OpenAI, LLM/router/hermes endpoints, `SIM_API_KEY`, LINE, Telegram, `NGROK_AUTHTOKEN` |
+| `docs/llm-api-key.secret.md` | in repo (gitignored) | LLM gateway API key |
+| `Caddyfile` | `~/caddy/config/Caddyfile` | Proxy config for `:3000` + LLM gateway `:8081` |
+| `llm-gateway.key` | `~/caddy/llm-gateway.key` | Shared bearer key for the `:8081` gateway |
+| `config.yaml` + `custom_logger.py` | `~/litellm/` | LiteLLM proxy config + logger |
+
+> **ngrok:** the fixed domain `mastiff-abruptly-casually.ngrok-free.dev` is tied to the ngrok
+> **account** (via `NGROK_AUTHTOKEN`), not the machine — it moves with the token, so the LINE
+> webhook URL stays valid and needs no re-registration. Container cmd:
+> `ngrok http orchestrator:8000 --url=<domain>`.
+
+**🟡 Optional — only to keep history/state**
+
+- `orchestrator/data/` — state, not config: `checkpoints.db`, `chat_memory.db`, `threads.db`,
+  `access.jsonl`, `line_media/`. Copy to keep conversation memory + history; skip for a clean start.
+- Docker volume `acm-llm_open-webui` — WebUI users/chats/settings. Export with
+  `docker run --rm -v acm-llm_open-webui:/data -v $PWD:/b busybox tar czf /b/webui.tgz /data`.
+- `searxng/settings.yml` — has a `secret_key`; `setup.sh` regenerates one, so copy only to keep it identical.
+
+**🟢 Do NOT copy — re-downloadable / regenerated**
+
+- vLLM weights (`/mnt/HDD4/acm_llm_data/huggingface`, tens of GB) — let vLLM re-pull from HF (`HF_TOKEN`).
+- Ollama `qwen2.5:3b-instruct` — just `ollama pull` again.
+- Caddy `data/` (self-signed certs), Grafana data — regenerated.
+- All `*.bak*`, `__pycache__/` — junk.
+
+**Using the bundle**
+
+```bash
+# On the OLD server the bundle was built at ~/acm-migration-bundle.tar.gz (12 MB).
+scp ~/acm-migration-bundle.tar.gz newserver:~/
+# On the NEW server, after `git clone` of acm-llm into ~/acm-llm:
+cd ~ && tar xzf acm-migration-bundle.tar.gz    # lands files at ~/acm-llm/.env, ~/caddy/…, ~/litellm/…
+```
+
+The bundle contains: `acm-llm/.env`, `acm-llm/docs/llm-api-key.secret.md`,
+`acm-llm/searxng/settings.yml`, `acm-llm/orchestrator/data/`, `caddy/config/Caddyfile`,
+`caddy/llm-gateway.key`, `litellm/config.yaml`, `litellm/custom_logger.py`. It does **not**
+include weights or the Open WebUI volume (copy those separately if wanted). **The bundle carries
+live secrets — move it over SSH only, delete it from both boxes afterwards, and rotate keys per §4.**
+
 ---
 
 ## Tiếng Việt
@@ -380,3 +430,52 @@ Kiểm tra lại bằng `git status --ignored` trước khi push.
 - Giữ server cũ chạy đến khi server mới qua hết §7.
 - Chuyển DNS/webhook (LINE `LINE_PUBLIC_BASE`) mới là công tắc thật — làm sau cùng.
 - Tải weights là bước chậm nhất; tải trước trên máy mới trước khi cutover.
+
+### Phụ lục A — Chính xác những file cần mang theo (không có trong git)
+
+Repo đã chứa toàn bộ code được track. Đây là những thứ git **không** giữ, phải chuyển tay.
+File `acm-migration-bundle.tar.gz` (bên dưới) đã đóng gói sẵn nhóm 🔴 + 🟡.
+
+**🔴 Bắt buộc — không có thì stack không chạy**
+
+| File | Vị trí | Chứa gì |
+|---|---|---|
+| `.env` | `acm-llm/.env` | Mọi khóa: OpenAI, endpoint LLM/router/hermes, `SIM_API_KEY`, LINE, Telegram, `NGROK_AUTHTOKEN` |
+| `docs/llm-api-key.secret.md` | trong repo (gitignored) | Khóa API cổng LLM |
+| `Caddyfile` | `~/caddy/config/Caddyfile` | Cấu hình proxy `:3000` + cổng LLM `:8081` |
+| `llm-gateway.key` | `~/caddy/llm-gateway.key` | Shared bearer key cho cổng `:8081` |
+| `config.yaml` + `custom_logger.py` | `~/litellm/` | Cấu hình + logger của LiteLLM proxy |
+
+> **ngrok:** domain cố định `mastiff-abruptly-casually.ngrok-free.dev` gắn với **tài khoản**
+> ngrok (qua `NGROK_AUTHTOKEN`), không theo máy — nó theo token, nên URL webhook LINE vẫn hợp
+> lệ, khỏi đăng ký lại. Lệnh container: `ngrok http orchestrator:8000 --url=<domain>`.
+
+**🟡 Tùy chọn — chỉ để giữ lịch sử/state**
+
+- `orchestrator/data/` — state, không phải config: `checkpoints.db`, `chat_memory.db`,
+  `threads.db`, `access.jsonl`, `line_media/`. Copy để giữ trí nhớ hội thoại + lịch sử; bỏ qua nếu muốn chạy mới sạch.
+- Volume Docker `acm-llm_open-webui` — user/chat/settings của WebUI. Xuất bằng
+  `docker run --rm -v acm-llm_open-webui:/data -v $PWD:/b busybox tar czf /b/webui.tgz /data`.
+- `searxng/settings.yml` — có `secret_key`; `setup.sh` tự sinh mới, chỉ copy nếu muốn giữ nguyên.
+
+**🟢 KHÔNG copy — tải/dựng lại được**
+
+- Weights vLLM (`/mnt/HDD4/acm_llm_data/huggingface`, chục GB) — để vLLM tự tải lại từ HF (`HF_TOKEN`).
+- Ollama `qwen2.5:3b-instruct` — chỉ cần `ollama pull` lại.
+- Caddy `data/` (chứng chỉ tự cấp), Grafana data — tự tạo lại.
+- Mọi `*.bak*`, `__pycache__/` — rác.
+
+**Dùng bundle**
+
+```bash
+# Trên server CŨ, bundle đã tạo ở ~/acm-migration-bundle.tar.gz (12 MB).
+scp ~/acm-migration-bundle.tar.gz newserver:~/
+# Trên server MỚI, sau khi `git clone` acm-llm vào ~/acm-llm:
+cd ~ && tar xzf acm-migration-bundle.tar.gz    # bung ra ~/acm-llm/.env, ~/caddy/…, ~/litellm/…
+```
+
+Bundle gồm: `acm-llm/.env`, `acm-llm/docs/llm-api-key.secret.md`, `acm-llm/searxng/settings.yml`,
+`acm-llm/orchestrator/data/`, `caddy/config/Caddyfile`, `caddy/llm-gateway.key`,
+`litellm/config.yaml`, `litellm/custom_logger.py`. **Không** gồm weights hay volume Open WebUI
+(copy riêng nếu cần). **Bundle chứa secret thật — chỉ chuyển qua SSH, xóa khỏi cả hai máy sau khi
+xong, và xoay khóa theo §4.**
