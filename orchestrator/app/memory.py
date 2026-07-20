@@ -29,6 +29,8 @@ _MAX_CONTENT = 4000        # per-message cap kept in the store
 _MAX_TURNS = 16            # most recent turns re-injected as context
 _MAX_HISTORY_CHARS = 8000  # total char budget for the re-injected history
 _MAX_SESSION_IMAGES = 2    # most recent photos remembered per session
+_MAX_SESSION_NETLISTS = 1  # most recent netlist remembered per session
+_MAX_SESSION_SOURCES = 8   # citations kept from the last web-search turn
 
 # Retention sweep at startup, for users who never reset their session. The
 # audit trail lives in access.jsonl — this store only needs usable context.
@@ -82,6 +84,35 @@ class ChatMemory:
         await self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_img_session "
             "ON session_images(user_id, session_id, id)")
+        # Netlists shared in the current session. In a group chat a member may
+        # drop a .cir/.zip that nobody addressed to the bot yet; storing it lets
+        # a later "$bot analyze the netlist above" re-attach and simulate it.
+        await self._db.execute(
+            """CREATE TABLE IF NOT EXISTS session_netlists (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   user_id TEXT,
+                   session_id TEXT,
+                   ts REAL,
+                   name TEXT,
+                   content TEXT)""")
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_netlist_session "
+            "ON session_netlists(user_id, session_id, id)")
+        # Citations (title, url) from the CURRENT session's most recent
+        # web-search turn. They exist only on the turn that actually searches,
+        # so caching them lets a "which website did you use?" follow-up — which
+        # does not itself search — still surface the sources.
+        await self._db.execute(
+            """CREATE TABLE IF NOT EXISTS session_sources (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   user_id TEXT,
+                   session_id TEXT,
+                   ts REAL,
+                   title TEXT,
+                   url TEXT)""")
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sources_session "
+            "ON session_sources(user_id, session_id, id)")
         # Age-based retention + reclaim file space. Cheap on this DB's size.
         now = time.time()
         await self._db.execute(
@@ -90,6 +121,12 @@ class ChatMemory:
         await self._db.execute(
             "DELETE FROM session_images WHERE ts < ?",
             (now - _RETAIN_IMG_DAYS * 86400,))
+        await self._db.execute(
+            "DELETE FROM session_netlists WHERE ts < ?",
+            (now - _RETAIN_MSG_DAYS * 86400,))
+        await self._db.execute(
+            "DELETE FROM session_sources WHERE ts < ?",
+            (now - _RETAIN_MSG_DAYS * 86400,))
         await self._db.commit()
         await self._db.execute("VACUUM")
 
@@ -117,6 +154,12 @@ class ChatMemory:
             (user_id, sid))
         await self._db.execute(
             "DELETE FROM session_images WHERE user_id = ? AND session_id != ?",
+            (user_id, sid))
+        await self._db.execute(
+            "DELETE FROM session_netlists WHERE user_id = ? AND session_id != ?",
+            (user_id, sid))
+        await self._db.execute(
+            "DELETE FROM session_sources WHERE user_id = ? AND session_id != ?",
             (user_id, sid))
         await self._db.commit()
         return sid
@@ -174,6 +217,71 @@ class ChatMemory:
         rows = await cur.fetchall()
         return [{"name": r["name"], "b64": r["b64"], "mime": r["mime"]}
                 for r in reversed(rows)]
+
+    async def save_netlists(self, user_id: str, netlists: list[dict]):
+        """Remember the session's most recent netlist(s), newest last. Only the
+        latest _MAX_SESSION_NETLISTS are kept — enough for a "the netlist above"
+        follow-up to re-attach and simulate without growing the DB unboundedly.
+        Entries with no content are skipped."""
+        sid = await self._session_id(user_id)
+        for nl in netlists:
+            content = nl.get("content")
+            if not content:
+                continue
+            await self._db.execute(
+                "INSERT INTO session_netlists(user_id, session_id, ts, name, content) "
+                "VALUES (?,?,?,?,?)",
+                (user_id, sid, time.time(), nl.get("name") or "circuit.cir", content))
+        await self._db.execute(
+            "DELETE FROM session_netlists WHERE user_id = ? AND session_id = ? "
+            "AND id NOT IN (SELECT id FROM session_netlists "
+            "  WHERE user_id = ? AND session_id = ? ORDER BY id DESC LIMIT ?)",
+            (user_id, sid, user_id, sid, _MAX_SESSION_NETLISTS))
+        await self._db.commit()
+
+    async def get_netlists(self, user_id: str) -> list[dict]:
+        """Netlists of the CURRENT session, oldest→newest ([] after /start)."""
+        sid = await self._session_id(user_id)
+        cur = await self._db.execute(
+            "SELECT name, content FROM session_netlists "
+            "WHERE user_id = ? AND session_id = ? ORDER BY id DESC LIMIT ?",
+            (user_id, sid, _MAX_SESSION_NETLISTS))
+        rows = await cur.fetchall()
+        return [{"name": r["name"], "content": r["content"]}
+                for r in reversed(rows)]
+
+    async def save_sources(self, user_id: str, sources: list):
+        """Remember the citations of the session's most recent web-search turn.
+        Replaces any prior set — only the latest search turn's sources matter for
+        a "which website did you use?" follow-up. `sources` is a list of
+        (title, url) as returned by llm.answer_with_web_search; entries with no
+        url are skipped, and an all-empty input is ignored (never clobbers the
+        cached set with nothing)."""
+        clean = [(t or u, u) for (t, u) in sources if u][:_MAX_SESSION_SOURCES]
+        if not clean:
+            return
+        sid = await self._session_id(user_id)
+        await self._db.execute(
+            "DELETE FROM session_sources WHERE user_id = ? AND session_id = ?",
+            (user_id, sid))
+        for title, url in clean:
+            await self._db.execute(
+                "INSERT INTO session_sources(user_id, session_id, ts, title, url) "
+                "VALUES (?,?,?,?,?)",
+                (user_id, sid, time.time(), title, url))
+        await self._db.commit()
+
+    async def get_sources(self, user_id: str) -> list:
+        """Citations from the CURRENT session's most recent web-search turn as
+        [(title, url), ...] ([] if none / after /start), matching the `cites`
+        shape that _format_sources consumes."""
+        sid = await self._session_id(user_id)
+        cur = await self._db.execute(
+            "SELECT title, url FROM session_sources "
+            "WHERE user_id = ? AND session_id = ? ORDER BY id",
+            (user_id, sid))
+        rows = await cur.fetchall()
+        return [(r["title"], r["url"]) for r in rows]
 
     async def close(self):
         if self._db is not None:

@@ -21,6 +21,16 @@ agent_client = AsyncOpenAI(base_url=config.AGENT_LLM_BASE_URL,
                            api_key=config.AGENT_LLM_API_KEY)
 
 
+def _tok_kwargs(model: str, max_tokens: int | None) -> dict:
+    """The output-token cap under the name the model accepts. gpt-5 / o-series
+    reasoning models reject the old `max_tokens` and require
+    `max_completion_tokens`; vLLM and gpt-4o still take `max_tokens`."""
+    mt = max_tokens or config.LLM_MAX_TOKENS
+    if model.startswith(("gpt-5", "o1", "o3", "o4")):
+        return {"max_completion_tokens": mt}
+    return {"max_tokens": mt}
+
+
 def _normalize(messages: list[dict]) -> list[dict]:
     """Re-tag late system messages as user turns.
 
@@ -68,7 +78,7 @@ async def complete(messages: list[dict], temperature: float = 0.2,
             model=model,
             messages=_normalize(messages),
             temperature=temperature,
-            max_tokens=max_tokens or config.LLM_MAX_TOKENS,
+            **_tok_kwargs(model, max_tokens),
         )
     except Exception as e:
         _log_buffered("complete", model, t0, error=e)
@@ -97,7 +107,7 @@ async def chat(messages: list[dict], tools: list[dict], *,
                 tools=tools,
                 tool_choice=tool_choice,
                 temperature=temperature,
-                max_tokens=max_tokens or config.LLM_MAX_TOKENS,
+                **_tok_kwargs(model, max_tokens),
             )
         except Exception:
             if tool_choice == "auto":
@@ -108,7 +118,7 @@ async def chat(messages: list[dict], tools: list[dict], *,
                 tools=tools,
                 tool_choice="auto",
                 temperature=temperature,
-                max_tokens=max_tokens or config.LLM_MAX_TOKENS,
+                **_tok_kwargs(model, max_tokens),
             )
     except Exception as e:
         _log_buffered("chat", model, t0, error=e)
@@ -116,6 +126,59 @@ async def chat(messages: list[dict], tools: list[dict], *,
     m = resp.choices[0].message
     _log_buffered("chat", model, t0, resp, tool_calls=len(m.tool_calls or []))
     return m
+
+
+async def answer_with_web_search(messages: list[dict], *,
+                                 model: str | None = None,
+                                 max_output_tokens: int | None = None):
+    """One-shot answer with OpenAI's built-in `web_search` tool available.
+
+    Uses the Responses API: the model decides on its own whether to search, so a
+    concept question is answered from knowledge while a "latest ..." question
+    triggers a live search. Returns (text, citations) where citations is a list
+    of (title, url). Raises on API/tool error so the caller can fall back to a
+    plain completion (e.g. if the key/model has no web_search access).
+    """
+    model = model or config.WEBSEARCH_MODEL
+    # Responses API convention: the system prompt rides in `instructions`.
+    instructions, inp = None, []
+    for m in messages:
+        if m.get("role") == "system" and instructions is None:
+            instructions = m.get("content")
+        else:
+            inp.append({"role": m.get("role"), "content": m.get("content")})
+    t0 = time.time()
+    try:
+        resp = await client.responses.create(
+            model=model,
+            instructions=instructions,
+            input=inp,
+            tools=[{"type": "web_search"}],
+            max_output_tokens=max_output_tokens or config.LLM_MAX_TOKENS,
+        )
+    except Exception as e:
+        access_log.log_llm_call("web_search", model, t0, None, None, time.time(),
+                                None, None, 0, 0,
+                                error=f"{type(e).__name__}: {e}")
+        raise
+    text = getattr(resp, "output_text", "") or ""
+    searched, cites, seen = False, [], set()
+    for item in getattr(resp, "output", None) or []:
+        if getattr(item, "type", "") == "web_search_call":
+            searched = True
+        for cont in getattr(item, "content", None) or []:
+            for a in getattr(cont, "annotations", None) or []:
+                url = getattr(a, "url", None)
+                if getattr(a, "type", "") == "url_citation" and url and url not in seen:
+                    seen.add(url)
+                    cites.append((getattr(a, "title", "") or url, url))
+    usage = getattr(resp, "usage", None)
+    access_log.log_llm_call(
+        "web_search", model, t0, None, None, time.time(),
+        getattr(usage, "input_tokens", None),
+        getattr(usage, "output_tokens", None),
+        0, len(text), tool_calls=1 if searched else 0)
+    return text, cites
 
 
 async def stream(messages: list[dict], temperature: float = 0.2,
@@ -136,8 +199,8 @@ async def stream(messages: list[dict], temperature: float = 0.2,
         model=model,
         messages=_normalize(messages),
         temperature=temperature,
-        max_tokens=max_tokens or config.LLM_MAX_TOKENS,
         stream=True,
+        **_tok_kwargs(model, max_tokens),
     )
     try:
         # include_usage: vLLM appends a final usage-only chunk to the stream.
@@ -228,7 +291,7 @@ async def complete_json(messages: list[dict], schema: dict,
             model=model,
             messages=_normalize(messages),
             temperature=temperature,
-            max_tokens=max_tokens or config.LLM_MAX_TOKENS,
+            **_tok_kwargs(model, max_tokens),
             response_format={
                 "type": "json_schema",
                 "json_schema": {"name": "output", "schema": schema},

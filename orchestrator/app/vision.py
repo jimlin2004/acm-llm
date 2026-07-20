@@ -74,16 +74,19 @@ async def netlist_from_image(message: str,
                + _image_parts(images))
     # The multimodal chat template rejects a system message that is not the
     # first message, so the language directive rides in the single system turn.
-    # Generous max_tokens: the thinking model can burn thousands of reasoning
-    # tokens on a messy photo before emitting the JSON. If it still returns
-    # nothing parseable, degrade to vision chat instead of failing the request.
+    # Cap max_tokens: a real netlist + notes fits in a few thousand tokens. A
+    # much larger budget just lets a non-thinking model (gpt-4o-mini) run away
+    # for minutes on a busy photo — and a runaway transcription lacks a
+    # terminating `.end`, so the sanity gate below drops it and we degrade to a
+    # plain vision-chat description anyway. Keeping it tight keeps replies fast
+    # enough to use the free reply token instead of a paid push.
     try:
         out = await llm.complete_json(
             [{"role": "system",
               "content": EXTRACT_SYSTEM + "\nWrite `notes` in the user's "
                          "language. " + lang_directive(message)},
              {"role": "user", "content": content}],
-            EXTRACT_SCHEMA, max_tokens=16384)
+            EXTRACT_SCHEMA, max_tokens=4096)
     except Exception:
         log.warning("netlist extraction unparseable — vision-chat fallback",
                     exc_info=True)

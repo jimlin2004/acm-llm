@@ -7,6 +7,7 @@ GET  /flow?user_id=...            list a user's threads
 """
 
 import asyncio
+import datetime
 import json
 import logging
 import os
@@ -37,16 +38,99 @@ log = logging.getLogger("orchestrator")
 # Vietnamese word "mô hình" (model), which is not an image reference.
 _IMG_REF = re.compile(
     r"(?iu)ảnh|(?<!mô )hình|đồ thị|biểu đồ|sơ đồ|schematic|diagram|image|"
-    r"picture|photo|chart|graph|figure|screenshot|图|圖|照片")
+    r"picture|photo|chart|graph|figure|screenshot|图|圖|照片|"
+    # Deictic follow-ups after a just-shared image ("what is this?", "cái này
+    # là gì?", "这是什么?") carry no image noun — LINE can't caption an image,
+    # so the question always arrives as a separate, keyword-free message.
+    r"\bthis\b|\bthat\b|này|đây|这|這|那")
+
+# Does the message talk about a netlist/circuit? Used to re-attach the session's
+# stored netlist to a text-only follow-up ("analyze the netlist above"), the way
+# _IMG_REF re-attaches a stored photo. "mạch" covers the Vietnamese for circuit.
+_NETLIST_REF = re.compile(
+    r"(?iu)netlist|mạch|circuit|电路|電路|\.cir\b|\.sp\b|\.spice\b")
+
+
+def _now_line() -> str:
+    """Current date/time for the prompt so the model can answer "what's the date"
+    (it has no clock of its own). Reported in Taiwan time (UTC+8), where the
+    users and the server are."""
+    now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
+    return (f"\n\nCurrent date and time: {now:%Y-%m-%d %H:%M} "
+            f"(UTC+8, Taiwan time).")
 
 
 def _chat_messages(message: str, history: list | None = None) -> list[dict]:
-    """Plain-chat prompt: identity + a hard reply-language directive (the
-    model tends to default to English when left without a system prompt)."""
+    """Plain-chat prompt: identity + current date/time + a hard reply-language
+    directive (the model tends to default to English without a system prompt).
+    General questions (date, weather, trivia...) are answered, not refused."""
     return ([{"role": "system",
-              "content": config.ASSISTANT_IDENTITY + lang_directive(message)}]
+              "content": config.ASSISTANT_IDENTITY + _now_line()
+              + lang_directive(message)}]
             + (history or [])
             + [{"role": "user", "content": message}])
+
+
+# Added to the chat prompt only on the web-search path (the streaming/WebUI path
+# has no tool, so it must NOT be told it can search — it would hallucinate it).
+_WEBSEARCH_DIRECTIVE = (
+    "\n\nYou have a web_search tool. Use it whenever the question needs current "
+    "or external facts you are not certain of — latest process nodes, part "
+    "datasheets and specs, prices, or recent electronics news. Do not search "
+    "for settled theory you already know. Cite the sources you actually used.")
+
+
+# A follow-up asking where the previous answer came from ("which website did
+# you use?", "nguồn nào?", "哪个网站?"). Such a turn does not itself trigger a
+# web_search, so it returns no citations — we re-attach the last search turn's
+# cached sources instead. Only consulted when the current turn found none, so
+# an over-broad match at worst appends slightly stale sources to a chat reply.
+_SOURCE_REF = re.compile(
+    r"(?iu)which (web ?site|site|source|link|url|page)|"
+    r"what (web ?site|source|link)|where (did|do) you (get|find|read)|"
+    r"your source|the (source|link|reference)|"
+    r"(web ?site|trang( web)?|nguồn|link|nguồn tin) nào|"
+    r"nguồn (ở|từ) đâu|lấy (nó )?(từ|ở) đâu|trích dẫn|tham khảo|"
+    r"哪个?网站|哪個?網站|哪个?来源|哪個?來源|來源|来源|参考|參考|链接|連結|鏈接")
+
+
+def _format_sources(message: str, cites: list) -> str:
+    if not cites:
+        return ""
+    label = _pick(message, en="Sources", vi="Nguồn", zh="來源")
+    lines = "\n".join(f"- {title}: {url}"
+                      for title, url in cites[:config.WEBSEARCH_MAX_SOURCES])
+    return f"\n\n🔎 {label}:\n{lines}"
+
+
+async def _chat_answer(message: str, history: list,
+                       memory: ChatMemory | None = None,
+                       user_id: str | None = None) -> str:
+    """Plain-chat answer. With web search enabled the model may look things up
+    (Responses API + web_search tool) and we append the cited sources; on any
+    error, or when the feature is off, fall back to a plain completion.
+
+    Citations exist only on the turn that actually searches, so we cache the
+    last search turn's sources per session (when memory is available). A
+    follow-up like "which website did you use?" does not search itself and would
+    otherwise come back empty — for such a turn we re-attach the cached set."""
+    msgs = _chat_messages(message, history)
+    if config.WEBSEARCH_ENABLED:
+        search_msgs = [dict(m) for m in msgs]
+        if search_msgs and search_msgs[0].get("role") == "system":
+            search_msgs[0]["content"] += _WEBSEARCH_DIRECTIVE
+        try:
+            text, cites = await llm.answer_with_web_search(search_msgs)
+            if text.strip():
+                if memory is not None and user_id is not None:
+                    if cites:
+                        await memory.save_sources(user_id, cites)
+                    elif _SOURCE_REF.search(message or ""):
+                        cites = await memory.get_sources(user_id)
+                return text + _format_sources(message, cites)
+        except Exception:
+            log.exception("web search failed; falling back to plain chat")
+    return await llm.complete(msgs, temperature=0.6)
 
 
 @asynccontextmanager
@@ -241,6 +325,22 @@ async def _flow_start_impl(req: StartRequest):
                 log.info("re-attached %d session image(s) for follow-up",
                          len(stored))
 
+        if req.attachments:
+            # Remember this session's netlist(s) for later follow-ups.
+            await memory.save_netlists(
+                req.user_id, [a.model_dump() for a in req.attachments])
+        elif (not req.images and req.flow_id is None
+                and _NETLIST_REF.search(req.message or "")):
+            # Text-only follow-up about "the netlist above" (common in a group
+            # chat, where a shared .cir arrives with no way to address the bot):
+            # re-attach the session's stored netlist so it can be simulated.
+            stored_nl = await memory.get_netlists(req.user_id)
+            if stored_nl:
+                req.attachments = [AttachmentIn(**a) for a in stored_nl]
+                attachments = [Attachment(a.name, a.content) for a in req.attachments]
+                log.info("re-attached %d session netlist(s) for follow-up",
+                         len(stored_nl))
+
     flow_id, params = req.flow_id, dict(req.params)
     if flow_id is None and not req.images:
         routed = await router.route(req.message, [a.name for a in attachments])
@@ -256,8 +356,9 @@ async def _flow_start_impl(req: StartRequest):
     if flow_id is None:
         result = await _image_flow(req, history)
     elif flow_id == "chat":
-        answer = await llm.complete(
-            _chat_messages(req.message, history), temperature=0.6)
+        answer = await _chat_answer(req.message, history,
+                                    memory if req.use_memory else None,
+                                    req.user_id)
         result = {"thread_id": None, "status": "completed", "message": answer}
     else:
         spec = FLOWS.get(flow_id)
@@ -274,8 +375,12 @@ async def _flow_start_impl(req: StartRequest):
                 return {"thread_id": None, "status": "clarify", "message": str(e)}
             if ctx is not None:  # router misroute answered as chat — log truth
                 ctx["flow_id"] = f"chat (fallback from {flow_id})"
-            answer = await llm.complete(
-                _chat_messages(req.message, history), temperature=0.6)
+            # Route through the same chat path as flow_id=="chat" so a misrouted
+            # question (e.g. the router sends a terse "link"/"nguồn nào" to a
+            # circuit flow) still gets web search AND the cached-source re-attach.
+            answer = await _chat_answer(req.message, history,
+                                        memory if req.use_memory else None,
+                                        req.user_id)
             result = {"thread_id": None, "status": "completed", "message": answer}
         else:
             initial_state["history"] = history
@@ -296,6 +401,24 @@ async def session_reset(req: StartRequest):
     memory: ChatMemory = app.state.memory
     sid = await memory.new_session(req.user_id)
     return {"ok": True, "session_id": sid}
+
+
+@app.post("/session/observe")
+async def session_observe(req: StartRequest):
+    """Record a message into a session's memory WITHOUT running a flow or
+    replying. A group chat uses this for messages that are not addressed to the
+    bot (no "$bot"): the shared session keeps up with what everyone is
+    discussing, so a later "$bot ..." question has the full context — and any
+    photo/netlist shared here can be re-attached to that follow-up."""
+    memory: ChatMemory = app.state.memory
+    if (req.message or "").strip():
+        await memory.append(req.user_id, "user", req.message)
+    if req.images:
+        await memory.save_images(req.user_id, [i.model_dump() for i in req.images])
+    if req.attachments:
+        await memory.save_netlists(
+            req.user_id, [a.model_dump() for a in req.attachments])
+    return {"ok": True}
 
 
 def _sse(obj: dict) -> str:

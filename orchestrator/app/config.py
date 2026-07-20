@@ -8,6 +8,14 @@ LLM_API_KEY = os.environ.get("LLM_API_KEY", "none")
 LLM_MODEL = os.environ.get("LLM_MODEL", "qwen3-vl-32b")
 LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "8192"))
 
+# Web search — OpenAI's built-in `web_search` tool (Responses API). When on, the
+# plain-chat path lets the model decide whether to look things up on the web
+# (current process nodes, part datasheets, prices...) and cite sources. Needs an
+# OpenAI key/model that supports the tool; failures degrade to a plain answer.
+WEBSEARCH_ENABLED = os.environ.get("WEBSEARCH_ENABLED", "true").lower() != "false"
+WEBSEARCH_MODEL = os.environ.get("WEBSEARCH_MODEL") or LLM_MODEL
+WEBSEARCH_MAX_SOURCES = int(os.environ.get("WEBSEARCH_MAX_SOURCES", "4"))
+
 # Small/fast LLM for latency-sensitive structured calls (intent routing).
 # Defaults to the main LLM so the tier is optional.
 ROUTER_LLM_BASE_URL = os.environ.get("ROUTER_LLM_BASE_URL") or LLM_BASE_URL
