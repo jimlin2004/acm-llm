@@ -31,8 +31,9 @@ AGENT_LLM_API_KEY = os.environ.get("AGENT_LLM_API_KEY") or LLM_API_KEY
 AGENT_LLM_MODEL = os.environ.get("AGENT_LLM_MODEL") or LLM_MODEL
 
 # Simulation server (contract in ../sim-api.openapi.yaml).
-# Default points at the bundled mock until a real sim server is configured.
-SIM_API_URL = os.environ.get("SIM_API_URL", "http://sim-mock:9000/simulate")
+# Set SIM_API_URL in .env to point at the sim-server; default is the compose
+# service name over app-net.
+SIM_API_URL = os.environ.get("SIM_API_URL", "http://sim-server:9000/simulate")
 SIM_API_KEY = os.environ.get("SIM_API_KEY", "")
 SIM_TIMEOUT = float(os.environ.get("SIM_TIMEOUT", "180"))
 SIM_RETRIES = int(os.environ.get("SIM_RETRIES", "1"))

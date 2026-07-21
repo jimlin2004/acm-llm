@@ -6,7 +6,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --timeout 60 --retries 10 -r requirements.txt
 
 COPY app ./app
-COPY mock_sim_server.py .
 
 ENV PYTHONUNBUFFERED=1
 

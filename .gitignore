@@ -16,6 +16,6 @@ venv/
 *.bak
 *.bak.*
 
-# Migration bundles (chứa secret — không bao giờ commit)
+# Migration bundles (contain secrets — never commit)
 *.tar.gz
 *.tgz

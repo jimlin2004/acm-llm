@@ -28,8 +28,10 @@ services:
       - SIM_API_KEY=${SIM_API_KEY:-}
       - LOG_LEVEL=INFO
     ports:
-      # loopback only — orchestrator reaches it by service name over app-net
-      - "127.0.0.1:9000:9000"
+      # loopback only — orchestrator reaches it by service name over app-net.
+      # Host-published on 9001 (a native sim-server already owns host :9000 on
+      # this box); container port stays 9000.
+      - "127.0.0.1:9001:9000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/health').read()"]
       interval: 30s

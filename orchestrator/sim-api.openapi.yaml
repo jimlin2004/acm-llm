@@ -5,8 +5,8 @@ info:
   description: |
     API the simulation server must publish so the orchestrator
     (acm-llm) can call it. The client-side contract is fixed in
-    `app/tools/simulator.py` — if a sim server implements this spec exactly, the
-    mock can be swapped out just by changing the `SIM_API_URL` environment
+    `app/tools/simulator.py` — any sim server that implements this spec exactly
+    can be swapped in just by changing the `SIM_API_URL` environment
     variable, with no orchestrator code changes.
 
     See docs/sim-api-spec.md for the operational requirements (timeout,

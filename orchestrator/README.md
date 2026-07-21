@@ -21,8 +21,8 @@ Differences vs. the design doc, matching the live stack:
 docker compose -f docker-compose.orchestrator.yml up -d --build
 ```
 
-Services: `orchestrator` on **:8100**, `sim-mock` (fake simulation server) on
-**:9000**. Point at a different simulator by
+Services: `orchestrator` on **:8100** and `sim-server` (host-published on
+**:9001**, container port 9000). Point at a different simulator by
 setting `SIM_API_URL` in `.env` — the API it must publish is specified
 in [`docs/sim-api-spec.md`](../docs/sim-api-spec.md) (OpenAPI:
 [`sim-api.openapi.yaml`](sim-api.openapi.yaml)).
@@ -97,6 +97,5 @@ orchestrator/
 │   ├── config.py      # env settings
 │   ├── flows/         # one module per business flow (auto-registered)
 │   └── tools/         # one adapter per external API
-├── mock_sim_server.py # stand-in simulation server (POST /simulate)
 └── data/              # checkpoints.db + threads.db (mounted volume)
 ```
