@@ -122,10 +122,9 @@ def prepare(message: str, attachments: list[Attachment], params: dict) -> dict:
         "target_pdk": target_pdk,
         "spec_text": spec_text,
         "netlist": netlist,
-        # Migration LLM: default to the external cloud model
-        # (config.MIGRATION_LLM_MODEL, e.g. gpt-5-mini) so the local vLLM on
-        # GPU1 isn't tied up by the heavy migration generation; the Telegram
-        # /model selector can still override per-chat via params.
+        # Migration LLM: the configured cloud model handles the heavy
+        # migration generation (config.MIGRATION_LLM_MODEL, e.g. gpt-5-mini).
+        # A caller may still override it per-request via params.
         "llm_model_name": params.get("llm_model_name") or config.MIGRATION_LLM_MODEL,
     }
 
@@ -240,7 +239,7 @@ def _fmt_hz(hz) -> str | None:
     return f"{hz:.1f} Hz"
 
 
-# Internal, config-driven notices that are noise to the end user (the Qwen-VLM
+# Internal, config-driven notices that are noise to the end user (the VLM
 # visual check is disabled by design; those skip reasons shouldn't surface).
 _HIDDEN_WARNING_SUBSTR = ("vlm", "disabled_by_config")
 

@@ -16,7 +16,7 @@ LINE  ──▶  ngrok (fixed domain)  ──▶  orchestrator :8100 /line/webho
 
 | Component | How it runs | Port |
 |---|---|---|
-| **orchestrator** | `docker-compose.orchestrator.yml` (+ override) | `8100` |
+| **orchestrator** | `docker-compose.orchestrator.yml` | `8100` |
 | **sim-server** | same compose (ngspice) | `9000` (here published on `9001`, see below) |
 | **ngrok** | `docker run` on `app-net` | – |
 
@@ -41,36 +41,21 @@ cp .env.example .env
 
 `.env` is gitignored — it never leaves the box.
 
-## 3. (Optional) local router model
-
-The router points at OpenAI by default. Only if you set `ROUTER_LLM_*` to a
-local Ollama do you need:
+## 3. Bring up orchestrator + sim-server
 
 ```bash
-ollama pull qwen2.5:3b-instruct
-# and make Ollama listen on 0.0.0.0 so the container can reach it:
-#   sudo mkdir -p /etc/systemd/system/ollama.service.d
-#   printf '[Service]\nEnvironment="OLLAMA_HOST=0.0.0.0:11434"\n' \
-#     | sudo tee /etc/systemd/system/ollama.service.d/override.conf
-#   sudo systemctl daemon-reload && sudo systemctl restart ollama
-```
-
-## 4. Bring up orchestrator + sim-server
-
-```bash
-docker compose -f docker-compose.orchestrator.yml \
-  -f docker-compose.orchestrator.override.yml up -d --build
+docker compose -f docker-compose.orchestrator.yml up -d --build
 curl -s localhost:8100/health        # orchestrator
 curl -s localhost:8100/line/health   # LINE creds + quota
 ```
 
-> **Why the override:** if a native sim-server already occupies host
-> `127.0.0.1:9000`, `docker-compose.orchestrator.override.yml` republishes the
-> containerised sim-server's debug port on `9001`. The orchestrator still talks
-> to it as `sim-server:9000` over `app-net`, so nothing else changes. Drop the
-> override if port 9000 is free.
+> **sim-server port:** the compose file publishes the containerised sim-server's
+> debug port on host `127.0.0.1:9001` (a native sim-server already occupies host
+> `9000` on this box). The orchestrator still talks to it as `sim-server:9000`
+> over `app-net`, so nothing else changes. Edit the `ports:` line back to
+> `9000:9000` if host port 9000 is free.
 
-## 5. Public webhook (ngrok)
+## 4. Public webhook (ngrok)
 
 The ngrok **fixed domain is tied to your ngrok account**, not the machine, so it
 follows the authtoken. Start the agent here:
@@ -86,7 +71,7 @@ old server first (`ERR_NGROK_334` means the domain is still online elsewhere).
 Because the domain is unchanged, the LINE webhook URL stays valid — no need to
 re-register it. `line-tunnel.sh` (cloudflared) is a fallback tunnel.
 
-## 6. Verify end-to-end
+## 5. Verify end-to-end
 
 ```bash
 # LINE webhook reachable via the public domain (should be your orchestrator):

@@ -157,8 +157,8 @@ app.mount("/metrics", metrics.asgi_app)
 
 
 # --- Global concurrency guard (docs/hardening-plan.md Phase 1) ---------------
-# One GPU serves every flow; beyond the cap we shed load with a polite "busy"
-# instead of queueing unboundedly (which only multiplies timeouts).
+# A shared LLM backend serves every flow; beyond the cap we shed load with a
+# polite "busy" instead of queueing unboundedly (which only multiplies timeouts).
 _inflight = 0
 
 
@@ -235,8 +235,8 @@ async def _image_flow(req: "StartRequest", history: list) -> dict:
              bool(netlist), extracted["notes"][:120])
     if not netlist:
         # The fallback re-sends the same image — if extraction failed because
-        # vLLM rejected the image itself, this raises too. Answer with a clear
-        # notice instead of letting the request 500.
+        # the model rejected the image itself, this raises too. Answer with a
+        # clear notice instead of letting the request 500.
         try:
             answer = await vision.chat(req.message, images, history)
         except Exception:

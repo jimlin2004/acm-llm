@@ -6,7 +6,7 @@ channel is a thin I/O shim (receive + send + download) and behaves IDENTICALLY
 to the others. Nothing here talks to a specific messaging API.
 
 Each adapter provides its own transport (send text/image/file, download an
-attachment/photo, render the /model menu) and calls:
+attachment/photo) and calls:
   - detect_lang(), pick()              -> language + localized text
   - classify()                         -> what to do with an inbound message
   - RateLimiter.admit()                -> abuse guard (rate window)
@@ -107,13 +107,13 @@ MSG = {
               "• 在 PDK 之間遷移 netlist（/migrate）\n• 回答類比/數位電路理論問題",
     },
     "about": {
-        "en": "ACM Assistant — ACM Lab's assistant, powered by a local LLM plus a "
+        "en": "ACM Assistant — ACM Lab's assistant, powered by a cloud LLM plus a "
               "local ngspice simulation server. Purpose: evaluate, debug and migrate "
               "circuits right from chat. Feedback: /feedback",
-        "vi": "ACM Assistant — trợ lý của ACM Lab, chạy trên LLM local cùng sim server "
+        "vi": "ACM Assistant — trợ lý của ACM Lab, chạy trên LLM cloud cùng sim server "
               "ngspice chạy local. Mục đích: đánh giá, debug và migrate mạch ngay trong "
               "chat. Góp ý: /feedback",
-        "zh": "ACM Assistant — ACM Lab 的助理，由本機 LLM 與本機 ngspice 模擬伺服器驅動。"
+        "zh": "ACM Assistant — ACM Lab 的助理，由雲端 LLM 與本機 ngspice 模擬伺服器驅動。"
               "目的：在聊天中直接評估、除錯與遷移電路。意見回饋：/feedback",
     },
     "feedback_ok": {
@@ -201,7 +201,7 @@ def classify(text: str, has_photo: bool = False, has_document: bool = False) -> 
     """Decide what an inbound message means. Channel-agnostic.
 
     Returns {"kind": ...} where kind is one of:
-      reset | static(+key) | feedback(+arg) | cancel | model | unknown(+cmd) | flow
+      reset | static(+key) | feedback(+arg) | cancel | unknown(+cmd) | flow
     Media (photo/document) always takes the flow path even if it has a caption.
     """
     stripped = (text or "").strip()
@@ -218,8 +218,6 @@ def classify(text: str, has_photo: bool = False, has_document: bool = False) -> 
         return {"kind": "feedback", "arg": parts[1].strip() if len(parts) > 1 else ""}
     if first == "/cancel":
         return {"kind": "cancel"}
-    if first == "/model":
-        return {"kind": "model"}
     if first.startswith("/") and first != "/migrate" and not has_document:
         return {"kind": "unknown", "cmd": first}
     return {"kind": "flow"}

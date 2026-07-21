@@ -2,7 +2,7 @@
 orchestrator directly — no external gateway.
 
 Exposes:
-  GET  /v1/models              -> advertises a single model id `hermes`
+  GET  /v1/models              -> advertises a single model id `acm-orchestrator`
   POST /v1/chat/completions    -> wraps POST /flow/start (or /flow/stream when
                                   `stream: true`), translating between the
                                   OpenAI chat schema and the flow API.
@@ -24,7 +24,7 @@ from fastapi.responses import StreamingResponse
 router = APIRouter()
 
 SELF = "http://127.0.0.1:8000"   # orchestrator serves flow API on container port 8000
-MODEL_ID = "hermes"
+MODEL_ID = "acm-orchestrator"
 
 # The circuit flows read the netlist from `attachments`, not the message body.
 # Open WebUI folds a pasted/uploaded netlist into the message text, so pull it

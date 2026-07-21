@@ -1,12 +1,12 @@
 """Vision path: read a circuit-schematic photo with the multimodal main LLM.
 
-The main model (Qwen3.6-35B-A3B) is image-text-to-text, so a photo of a
+The main model is multimodal (image-text-to-text), so a photo of a
 schematic can be transcribed into a SPICE netlist and handed to the normal
 evaluate_circuit flow (simulation + charts). An image that is not a readable
 schematic falls back to a plain vision-chat answer instead.
 
 Images travel as (base64, mime) pairs and are inlined as data-URI
-`image_url` content parts (OpenAI vision format, supported by vLLM).
+`image_url` content parts (OpenAI vision format).
 """
 
 import logging

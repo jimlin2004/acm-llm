@@ -1,8 +1,8 @@
 ###############################################################################
 # Orchestrator stack (see docs/orchestrator.md + orchestrator/README.md)
 #
-# Standalone compose file — does not touch the running vllm/open-webui
-# containers. LLM calls go straight to vLLM on the host port 8002.
+# Standalone compose file. LLM calls go to the OpenAI API (cloud); set the
+# LLM_* / OPENAI keys in .env.
 #
 # Usage:
 #   docker compose -f docker-compose.orchestrator.yml up -d --build
@@ -49,16 +49,16 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:8002/v1}
-      - LLM_API_KEY=${LLM_API_KEY:-none}
-      - LLM_MODEL=${LLM_MODEL:-qwen3.6-35b-a3b}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.openai.com/v1}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_MODEL=${LLM_MODEL:-gpt-5.4-mini}
       - ROUTER_LLM_BASE_URL=${ROUTER_LLM_BASE_URL:-}
       - ROUTER_LLM_API_KEY=${ROUTER_LLM_API_KEY:-}
       - ROUTER_LLM_MODEL=${ROUTER_LLM_MODEL:-}
-      # Hermes tool-calling model for the agentic hermes_eval flow (own vLLM)
-      - HERMES_LLM_BASE_URL=${HERMES_LLM_BASE_URL:-}
-      - HERMES_LLM_API_KEY=${HERMES_LLM_API_KEY:-}
-      - HERMES_LLM_MODEL=${HERMES_LLM_MODEL:-}
+      # Tool-calling model for the agentic agent_eval flow (falls back to LLM_*)
+      - AGENT_LLM_BASE_URL=${AGENT_LLM_BASE_URL:-}
+      - AGENT_LLM_API_KEY=${AGENT_LLM_API_KEY:-}
+      - AGENT_LLM_MODEL=${AGENT_LLM_MODEL:-}
       - SIM_API_URL=${SIM_API_URL:-http://sim-server:9000/simulate}
       - SIM_API_KEY=${SIM_API_KEY:-}
       - SIM_TIMEOUT=${SIM_TIMEOUT:-180}

@@ -8,7 +8,6 @@ LINE platform limits are handled explicitly:
     cloudflared tunnel) and send image messages.
   - files (.sp migrated netlist): LINE has NO file/document message type, so we
     host the file and send a download LINK as text.
-  - /model: LINE Quick Reply (postback) instead of Telegram's inline keyboard.
   - text: LINE renders plain text only (no markdown/HTML).
 
 Public entry: POST /line/webhook (front it with the tunnel). Verify signature
@@ -63,14 +62,8 @@ _REPLY_TTL = 45.0
 _MAX_DOC_BYTES = chat_core.MAX_DOC_BYTES
 _MAX_IMG_BYTES = 10 * 1024 * 1024
 
-_MODEL_LOCAL = "qwen3.6-35b-a3b"     # local vLLM (explicit override)
-_MODEL_EXTERNAL = "gpt-5-mini"        # external cloud model
-_MODEL_LABELS = {_MODEL_LOCAL: "Local · Qwen (vLLM)",
-                 _MODEL_EXTERNAL: "External · gpt-5-mini"}
-
 # Per-user state (keyed by LINE userId).
 _chat_lang: dict[str, str] = {}
-_chat_model: dict[str, str] = {}
 _running: dict[str, asyncio.Task] = {}
 _rate = chat_core.RateLimiter(config.LINE_RATE_N, config.LINE_RATE_WINDOW)
 
@@ -398,10 +391,6 @@ def _host_media(raw: bytes, content_type: str, filename: str, ext: str) -> str |
     return f"{_public_base}/line/media/{tok}.{ext}"
 
 
-def _model_label(mid: str) -> str:
-    return _MODEL_LABELS.get(mid or _MODEL_LOCAL, _MODEL_LABELS[_MODEL_LOCAL])
-
-
 # --------------------------------------------------------------------------- #
 # flow execution + reply (mirrors telegram _run_and_reply)
 # --------------------------------------------------------------------------- #
@@ -421,11 +410,9 @@ async def _run_and_reply(resp: "_Responder", text: str, attachment=None,
             or chat_core.extract_netlist(text) is not None)
     hint = await _processing_hint(resp) if slow else None
     try:
+        # /migrate always uses the configured migration model
+        # (config.MIGRATION_LLM_MODEL); there is no per-chat model override.
         params = None
-        if is_migrate:
-            chosen = _chat_model.get(uid)
-            if chosen:
-                params = {"llm_model_name": chosen}
         attachments = [attachment] if attachment else None
         if attachments is None:
             nl = chat_core.extract_netlist(text)
@@ -527,35 +514,6 @@ def _file_link(uid: str, fname: str, data_uri: str) -> str | None:
 
 
 # --------------------------------------------------------------------------- #
-# /model quick-reply menu (LINE equivalent of the inline keyboard)
-# --------------------------------------------------------------------------- #
-async def _send_model_menu(resp: "_Responder"):
-    uid = resp.uid
-    current = _chat_model.get(uid, _MODEL_LOCAL)
-    lang = _chat_lang.get(uid, "en")
-    head = {"vi": "Model cho /migrate", "zh": "/migrate 使用的模型"}.get(
-        lang, "Model for /migrate")
-    cur = {"vi": "Đang dùng", "zh": "目前"}.get(lang, "Current")
-    quick = {"items": [
-        {"type": "action", "action": {"type": "postback", "label": "🖥️ Local · Qwen",
-                                       "data": "model:local", "displayText": "Local · Qwen"}},
-        {"type": "action", "action": {"type": "postback", "label": "☁️ gpt-5-mini",
-                                       "data": f"model:{_MODEL_EXTERNAL}",
-                                       "displayText": "External · gpt-5-mini"}},
-    ]}
-    await resp.send([{"type": "text",
-                      "text": f"{head}\n{cur}: {_model_label(current)}",
-                      "quickReply": quick}])
-
-
-async def _handle_model_postback(resp: "_Responder", data: str):
-    choice = data.split(":", 1)[1] if ":" in data else "local"
-    model_id = _MODEL_EXTERNAL if choice == _MODEL_EXTERNAL else _MODEL_LOCAL
-    _chat_model[resp.uid] = model_id
-    await resp.text(f"✅ /migrate → {_model_label(model_id)}")
-
-
-# --------------------------------------------------------------------------- #
 # session reset (mirror telegram /start)
 # --------------------------------------------------------------------------- #
 async def _start_session(resp: "_Responder"):
@@ -605,9 +563,6 @@ async def _dispatch(resp: "_Responder", text: str, attachment=None, image=None,
             await resp.text(_msg(uid, "cancel_ok"))
         else:
             await resp.text(_msg(uid, "cancel_none"))
-        return
-    if k == "model":
-        await _send_model_menu(resp)
         return
     if k == "unknown":
         await resp.text(_msg(uid, "unknown_cmd", cmd=kind["cmd"]))
@@ -908,14 +863,6 @@ async def webhook(req: Request):
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="bad body")
     for ev in data.get("events", []):
-        et = ev.get("type")
-        if et == "message":
+        if ev.get("type") == "message":
             asyncio.create_task(_handle_message_event(ev))
-        elif et == "postback":
-            src = ev.get("source") or {}
-            uid = src.get("groupId") or src.get("roomId") or src.get("userId")
-            d = (ev.get("postback") or {}).get("data", "")
-            if uid and d.startswith("model:"):
-                asyncio.create_task(_handle_model_postback(
-                    _Responder(uid, ev.get("replyToken")), d))
     return Response(status_code=200)

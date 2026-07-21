@@ -1,4 +1,4 @@
-"""Thin LLM client over the OpenAI-compatible vLLM endpoint.
+"""Thin LLM client over the OpenAI API.
 
 Every call is timed and written to the access log (see access_log.py):
 model, duration, TTFT + thinking time (streamed calls), prompt/completion
@@ -24,7 +24,7 @@ agent_client = AsyncOpenAI(base_url=config.AGENT_LLM_BASE_URL,
 def _tok_kwargs(model: str, max_tokens: int | None) -> dict:
     """The output-token cap under the name the model accepts. gpt-5 / o-series
     reasoning models reject the old `max_tokens` and require
-    `max_completion_tokens`; vLLM and gpt-4o still take `max_tokens`."""
+    `max_completion_tokens`; gpt-4o and earlier still take `max_tokens`."""
     mt = max_tokens or config.LLM_MAX_TOKENS
     if model.startswith(("gpt-5", "o1", "o3", "o4")):
         return {"max_completion_tokens": mt}
@@ -34,19 +34,19 @@ def _tok_kwargs(model: str, max_tokens: int | None) -> dict:
 def _normalize(messages: list[dict]) -> list[dict]:
     """Re-tag late system messages as user turns.
 
-    Qwen3.6's chat template rejects any system message that is not the very
-    first message (400 "System message must be at the beginning"), but several
-    callers deliberately append directives LAST for recency (the language pin,
-    the agent tool nudges). A trailing user-role instruction keeps that
-    recency and is legal for every template.
+    Several callers deliberately append directives LAST for recency (the
+    language pin, the agent tool nudges). Some chat templates reject a system
+    message anywhere but the very first position; re-tagging a trailing
+    system turn as a user turn keeps the recency and is legal everywhere.
     """
     return [{**m, "role": "user"} if m.get("role") == "system" and i > 0 else m
             for i, m in enumerate(messages)]
 
 
 def _reasoning_of(message) -> str:
-    """vLLM exposes thinking text in a non-standard field whose name varies
-    by build — check both spellings (also in model_extra)."""
+    """Reasoning models expose thinking text in a non-standard field whose
+    name varies (`reasoning` / `reasoning_content`) — check both spellings
+    (also in model_extra)."""
     extra = message.model_extra or {}
     return (getattr(message, "reasoning", None)
             or getattr(message, "reasoning_content", None)
@@ -95,8 +95,8 @@ async def chat(messages: list[dict], tools: list[dict], *,
     carry `.tool_calls` (the model's decision on which tool to run) and/or
     `.content`. Caller drives the act/observe loop.
 
-    tool_choice="required" forces the model to call a tool (vLLM guided
-    decoding); falls back to "auto" if the server rejects it."""
+    tool_choice="required" forces the model to call a tool; falls back to
+    "auto" if the endpoint rejects it."""
     model = model or config.LLM_MODEL
     t0 = time.time()
     try:
@@ -189,9 +189,9 @@ async def stream(messages: list[dict], temperature: float = 0.2,
     """Stream a chat completion.
 
     Default yields answer-content strings. include_reasoning=True yields
-    ("reasoning", str) / ("content", str) tuples — vLLM exposes thinking tokens
-    in a non-standard delta field whose name varies by build ("reasoning" here,
-    "reasoning_content" elsewhere), so check both.
+    ("reasoning", str) / ("content", str) tuples — reasoning models expose
+    thinking tokens in a non-standard delta field whose name varies
+    ("reasoning" here, "reasoning_content" elsewhere), so check both.
     """
     model = model or config.LLM_MODEL
     t0 = time.time()
@@ -203,7 +203,7 @@ async def stream(messages: list[dict], temperature: float = 0.2,
         **_tok_kwargs(model, max_tokens),
     )
     try:
-        # include_usage: vLLM appends a final usage-only chunk to the stream.
+        # include_usage: the API appends a final usage-only chunk to the stream.
         s = await (oai or client).chat.completions.create(
             stream_options={"include_usage": True}, **kwargs)
     except Exception:
@@ -276,7 +276,8 @@ async def complete_json(messages: list[dict], schema: dict,
                         temperature: float = 0.0, fast: bool = False,
                         escalate: bool = True,
                         max_tokens: int | None = None) -> dict:
-    """Structured output via guided decoding; falls back to prompt-only JSON.
+    """Structured output via json_schema response_format; falls back to
+    prompt-only JSON.
 
     fast=True uses the small ROUTER_LLM model (latency-sensitive calls such
     as intent routing). On failure it normally redoes the call on the main
@@ -310,7 +311,7 @@ async def complete_json(messages: list[dict], schema: dict,
         if fast:  # small model unusable/unreachable — redo on the main model
             return await complete_json(messages, schema, temperature, fast=False,
                                        max_tokens=max_tokens)
-        # guided decoding returned nothing usable (e.g. the model spent the
+        # structured output returned nothing usable (e.g. the model spent the
         # whole budget on reasoning) — retry once with prompt-only JSON
         text = await complete(
             messages + [{"role": "user",

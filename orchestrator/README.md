@@ -4,14 +4,15 @@ Implementation of `docs/orchestrator.md`: Router (LLM) → Flow engine (LangGrap
 durable checkpoints, human-in-the-loop) → Responder. Flows:
 - **`evaluate_circuit`** — fixed pipeline: send a `.cir` netlist to the
   simulation server, then LLM-assess the results.
-- **`hermes_eval`** — agentic alternative: a Hermes tool-calling model
-  (separate vLLM, `HERMES_LLM_*`) classifies each request and decides which
-  tool to run (`simulate_circuit` / `plot_waveforms` / answer directly). Runs
-  on the same netlist so the two orchestration styles can be compared.
+- **`agent_eval`** — agentic alternative: a tool-calling model
+  (`AGENT_LLM_*`, falls back to the main LLM) classifies each request and
+  decides which tool to run (`simulate_circuit` / `plot_waveforms` / answer
+  directly). Runs on the same netlist so the two orchestration styles can be
+  compared.
 
 Differences vs. the design doc, matching the live stack:
-- LLM calls go **directly to vLLM** (`host.docker.internal:8000/v1`, model
-  `qwen3-vl-32b`) — LiteLLM is not deployed.
+- LLM calls go to the **OpenAI API** (`api.openai.com/v1`, model from
+  `LLM_MODEL`) — cloud-hosted, no local model server.
 - Checkpointer is **SQLite** (`/data/checkpoints.db`) — no Postgres server is
   running. Swapping to `PostgresSaver` later only touches `main.py`'s lifespan.
 
@@ -93,7 +94,7 @@ orchestrator/
 │   ├── engine.py      # runs graphs, interrupt/resume, thread metadata
 │   ├── router.py      # LLM intent router (structured output)
 │   ├── registry.py    # FlowSpec contract + FLOWS registry
-│   ├── llm.py         # vLLM client (plain + JSON-schema completions)
+│   ├── llm.py         # OpenAI-compatible LLM client (plain + JSON-schema completions)
 │   ├── config.py      # env settings
 │   ├── flows/         # one module per business flow (auto-registered)
 │   └── tools/         # one adapter per external API

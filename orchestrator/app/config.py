@@ -2,10 +2,10 @@
 
 import os
 
-# LLM — direct vLLM endpoint (no LiteLLM in the current stack)
-LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://host.docker.internal:8000/v1")
-LLM_API_KEY = os.environ.get("LLM_API_KEY", "none")
-LLM_MODEL = os.environ.get("LLM_MODEL", "qwen3-vl-32b")
+# LLM — OpenAI-hosted (cloud). All requests go to the OpenAI API.
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1")
+LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
+LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-5.4-mini")
 LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "8192"))
 
 # Web search — OpenAI's built-in `web_search` tool (Responses API). When on, the
@@ -22,10 +22,10 @@ ROUTER_LLM_BASE_URL = os.environ.get("ROUTER_LLM_BASE_URL") or LLM_BASE_URL
 ROUTER_LLM_API_KEY = os.environ.get("ROUTER_LLM_API_KEY") or LLM_API_KEY
 ROUTER_LLM_MODEL = os.environ.get("ROUTER_LLM_MODEL") or LLM_MODEL
 
-# Agent — OpenAI-compatible endpoint serving a tool-calling model, used by
-# the agentic `agent_eval` flow (it classifies each request and decides which
-# tool to run). Any endpoint with reliable function calling works. Falls
-# back to the main LLM so the flow still loads if the tier is not configured.
+# Agent — endpoint serving a tool-calling model, used by the agentic
+# `agent_eval` flow (it classifies each request and decides which tool to run).
+# Any OpenAI model with reliable function calling works. Falls back to the main
+# LLM so the flow still loads if the tier is not configured separately.
 AGENT_LLM_BASE_URL = os.environ.get("AGENT_LLM_BASE_URL") or LLM_BASE_URL
 AGENT_LLM_API_KEY = os.environ.get("AGENT_LLM_API_KEY") or LLM_API_KEY
 AGENT_LLM_MODEL = os.environ.get("AGENT_LLM_MODEL") or LLM_MODEL
@@ -44,9 +44,8 @@ SIM_RETRIES = int(os.environ.get("SIM_RETRIES", "1"))
 MIGRATION_API_URL = os.environ.get("MIGRATION_API_URL", "http://host.docker.internal:5000")
 MIGRATION_DRY_RUN = os.environ.get("MIGRATION_DRY_RUN", "true").lower() != "false"
 MIGRATION_LLM_PROVIDER = os.environ.get("MIGRATION_LLM_PROVIDER", "openai")
-# Default migration model. gpt-5-mini (external OpenAI cloud) keeps the heavy
-# migration generation off the local vLLM (GPU1); a per-chat /model override
-# still wins. Set to "qwen3.6-35b-a3b" to route migration back to the vLLM.
+# Default migration model — gpt-5-mini (OpenAI cloud) handles the heavy
+# migration generation.
 MIGRATION_LLM_MODEL = os.environ.get("MIGRATION_LLM_MODEL", "gpt-5-mini")
 MIGRATION_TIMEOUT = float(os.environ.get("MIGRATION_TIMEOUT", "1200"))
 
@@ -55,7 +54,7 @@ DATA_DIR = os.environ.get("DATA_DIR", "/data")
 
 # --- Abuse guards (docs/hardening-plan.md Phase 1) ---------------------------
 # Global cap on concurrently running flows; excess requests are shed with a
-# polite "busy" reply instead of queueing unboundedly on one GPU.
+# polite "busy" reply instead of queueing unboundedly on the backend.
 MAX_CONCURRENT_FLOWS = int(os.environ.get("MAX_CONCURRENT_FLOWS", "3"))
 
 # --- LINE adapter ------------------------------------------------------------
