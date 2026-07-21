@@ -22,6 +22,12 @@ DEFAULT_MAX_RUNTIME_S = float(os.environ.get("SIM_DEFAULT_MAX_RUNTIME_S", "60"))
 HARD_MAX_RUNTIME_S = float(os.environ.get("SIM_HARD_MAX_RUNTIME_S", "170"))
 LOG_TAIL_BYTES = int(os.environ.get("SIM_LOG_TAIL_BYTES", "4096"))
 
+# Where the Sky130 PDK is mounted inside this container. Users on LINE can't
+# know the server's filesystem layout, so a netlist's `.lib` path is often from
+# the author's machine (or absent). We resolve it to this known-good location.
+PDK_ROOT = os.environ.get("PDK_ROOT", "/usr/local/share/pdk")
+PDK_DEFAULT_CORNER = os.environ.get("PDK_DEFAULT_CORNER", "tt")
+
 
 @dataclass
 class Waveform:
@@ -109,13 +115,35 @@ def _waveform_filename(analysis: str) -> str:
     return f"wave_{analysis}.txt"
 
 
-def _build_control_block(analyses: list[str], include_waveforms: bool = False) -> str:
+# The metric/waveform probes below are written against a node literally named
+# `out`. Real netlists name the output differently (vout, output, vo, ...), and
+# a user on LINE can't know we assume `out` — so we detect the output node from
+# the netlist and substitute it in. Order = priority when several are present.
+_OUTPUT_NODE_CANDIDATES = ("vout", "out", "output", "vo")
+
+
+def _detect_output_node(netlist: str) -> str:
+    """Best-effort guess of the circuit's output node so AC/DC/tran metrics probe
+    the right vector. Falls back to `out` (the historical assumption)."""
+    tokens = set(re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", netlist.lower()))
+    for cand in _OUTPUT_NODE_CANDIDATES:
+        if cand in tokens:
+            return cand
+    return "out"
+
+
+def _build_control_block(analyses: list[str], include_waveforms: bool = False,
+                         out_node: str = "out") -> str:
     """Append a `.control` block that prints summary metrics for each analysis.
 
     We rely on ngspice's `let`/`print` to emit `KEY=VALUE` lines we can parse.
     Everything we print uses the `__METRIC__` marker so we can grep it out of
     the noisy simulator log. When `include_waveforms` is set we also dump the
     raw vectors for each plottable analysis via `wrdata` into a side file.
+
+    Probes are authored against `(out)` and, if the real output node differs,
+    every `(out)` occurrence is remapped to `({out_node})` at the end — this
+    covers both the meas lines and the waveform `let` expressions in one pass.
     """
     lines = [".control", "set noaskquit", "set nomoremode", "run"]
 
@@ -190,12 +218,16 @@ def _build_control_block(analyses: list[str], include_waveforms: bool = False) -
     lines.append("echo __DONE__")
     lines.append("quit")
     lines.append(".endc")
-    return "\n".join(lines)
+    block = "\n".join(lines)
+    if out_node != "out":
+        block = block.replace("(out)", f"({out_node})")
+    return block
 
 
-def _inject_control(netlist: str, analyses: list[str], include_waveforms: bool = False) -> str:
+def _inject_control(netlist: str, analyses: list[str], include_waveforms: bool = False,
+                    out_node: str = "out") -> str:
     """Insert our control block right before `.end`. If none, append before EOF."""
-    control = _build_control_block(analyses, include_waveforms)
+    control = _build_control_block(analyses, include_waveforms, out_node)
     # Strip any existing user `.control ... .endc` so we don't double-quit.
     pattern = re.compile(r"\.control\b.*?\.endc\b", re.IGNORECASE | re.DOTALL)
     cleaned = pattern.sub("", netlist)
@@ -349,7 +381,94 @@ def _error_outcome(
     )
 
 
+_SKY130_DEVICE_RE = re.compile(r"sky130_fd_pr__", re.IGNORECASE)
+
+
+def _sky130_variant(path: str) -> str:
+    """Pick the PDK flavour the netlist meant (sky130A vs the -B mismatch corner)."""
+    return "sky130B" if "sky130b" in path.lower() else "sky130A"
+
+
+def _canonical_sky130_lib(variant: str) -> str:
+    return os.path.join(PDK_ROOT, variant, "libs.tech", "ngspice", "sky130.lib.spice")
+
+
+def _is_sky130_lib_ref(path: str) -> bool:
+    p = path.lower()
+    return "sky130" in p and p.endswith("sky130.lib.spice")
+
+
+def _insert_after_title(netlist: str, directive: str) -> str:
+    """Insert a dot-card after the SPICE title line (the mandatory first card)."""
+    lines = netlist.split("\n")
+    idx = 0
+    while idx < len(lines) and not lines[idx].strip():
+        idx += 1
+    lines.insert(min(idx + 1, len(lines)), directive)
+    return "\n".join(lines)
+
+
+def _normalize_pdk_libs(netlist: str) -> tuple[str, list[str]]:
+    """Fix or supply the Sky130 model-library include so a netlist authored on
+    another machine still simulates here.
+
+    - A `.lib`/`.include` pointing at a non-existent sky130.lib.spice is remapped
+      to this container's PDK (corner preserved).
+    - A netlist that uses sky130 devices but includes no model library at all
+      gets a default `.lib ... tt` injected.
+
+    Returns the (possibly rewritten) netlist and human-readable notes describing
+    every change, so the edit is surfaced to the user rather than done silently.
+    """
+    notes: list[str] = []
+    out_lines: list[str] = []
+    saw_sky130_lib = False
+
+    for line in netlist.splitlines():
+        low = line.strip().lower()
+        if low.startswith((".lib", ".include", ".inc")):
+            tokens = line.strip().split()
+            if len(tokens) >= 2:
+                raw_path = tokens[1].strip("\"'")
+                if _is_sky130_lib_ref(raw_path):
+                    saw_sky130_lib = True
+                    if not os.path.exists(raw_path):
+                        canonical = _canonical_sky130_lib(_sky130_variant(raw_path))
+                        if os.path.exists(canonical):
+                            kind = ".lib" if tokens[0].lower().startswith(".lib") else ".include"
+                            corner = tokens[2] if len(tokens) >= 3 else ""
+                            out_lines.append(f"{kind} {canonical}{(' ' + corner) if corner else ''}")
+                            notes.append(
+                                f"remapped Sky130 model library to {canonical} — the "
+                                f"netlist path '{raw_path}' does not exist on the server"
+                            )
+                            continue
+                        # canonical missing too — leave original, ngspice will report it
+        out_lines.append(line)
+
+    result = "\n".join(out_lines)
+
+    if not saw_sky130_lib and _SKY130_DEVICE_RE.search(netlist):
+        canonical = _canonical_sky130_lib("sky130A")
+        if os.path.exists(canonical):
+            directive = f".lib {canonical} {PDK_DEFAULT_CORNER}"
+            result = _insert_after_title(result, directive)
+            notes.append(
+                "netlist uses Sky130 devices but included no model library — "
+                f"added '{directive}'"
+            )
+
+    return result, notes
+
+
 async def run_simulation(netlist: str, options: dict) -> SimOutcome:
+    netlist, pdk_notes = _normalize_pdk_libs(netlist)
+    out_node = _detect_output_node(netlist)
+    if out_node != "out":
+        pdk_notes.append(
+            f"measured AC/DC/transient metrics at output node '{out_node}' "
+            f"(auto-detected from the netlist)"
+        )
     analyses = _detect_analyses(netlist)
     if not analyses:
         return _error_outcome(
@@ -371,7 +490,7 @@ async def run_simulation(netlist: str, options: dict) -> SimOutcome:
         max_points = _WAVEFORM_DEFAULT_MAX_POINTS
     max_points = max(1, min(max_points, _WAVEFORM_HARD_MAX_POINTS))
 
-    augmented = _inject_control(netlist, analyses, include_waveforms)
+    augmented = _inject_control(netlist, analyses, include_waveforms, out_node)
 
     if not shutil.which(NGSPICE_BIN):
         return _error_outcome(
@@ -414,6 +533,7 @@ async def run_simulation(netlist: str, options: dict) -> SimOutcome:
 
         stdout = stdout_bytes.decode("utf-8", errors="replace")
         results, warnings, errors = _parse_output(stdout, analyses)
+        warnings = pdk_notes + warnings  # surface any .lib remap/injection
         analyses_run = [a for a in analyses if a in results]
 
         waveforms: dict[str, Waveform] = {}

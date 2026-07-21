@@ -369,6 +369,8 @@ async def _flow_start_impl(req: StartRequest):
             # flow_id (e.g. /migrate) keeps the precise clarification.
             if req.flow_id is not None or attachments:
                 return {"thread_id": None, "status": "clarify", "message": str(e)}
+            log.warning("flow %s missing params, no attachment — router "
+                        "misroute, answering as chat: %s", flow_id, e)
             if ctx is not None:  # router misroute answered as chat — log truth
                 ctx["flow_id"] = f"chat (fallback from {flow_id})"
             # Route through the same chat path as flow_id=="chat" so a misrouted
@@ -491,6 +493,8 @@ async def flow_stream(req: StartRequest):
             # Same fallback as /flow/start: router misroute of a plain
             # question (no attachment) is answered as chat.
             if req.flow_id is None and not attachments:
+                log.warning("flow %s missing params, no attachment — router "
+                            "misroute, streaming as chat: %s", flow_id, e)
                 async for delta in llm.stream_with_thinking(
                         _chat_messages(req.message), temperature=0.6):
                     yield _sse({"type": "delta", "text": delta})

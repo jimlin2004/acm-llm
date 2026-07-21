@@ -27,6 +27,12 @@ services:
     environment:
       - SIM_API_KEY=${SIM_API_KEY:-}
       - LOG_LEVEL=INFO
+    volumes:
+      # Sky130 PDK from the host, read-only, at the same path the netlists'
+      # `.lib` lines reference (/usr/local/share/pdk/sky130A/...). Without this
+      # the containerized ngspice can't find sky130.lib.spice and bails before
+      # simulating. The native host sim-server on :9000 reads the PDK directly.
+      - /usr/local/share/pdk:/usr/local/share/pdk:ro
     ports:
       # loopback only — orchestrator reaches it by service name over app-net.
       # Host-published on 9001 (a native sim-server already owns host :9000 on
