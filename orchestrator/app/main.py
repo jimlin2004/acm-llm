@@ -22,7 +22,6 @@ from . import access_log, config, llm, metrics, router, vision
 from . import flows  # noqa: F401  — imports trigger flow registration
 from .engine import FlowEngine
 from .memory import ChatMemory
-from .openai_compat import router as openai_router
 from .line_webhook import router as line_router
 from .registry import FLOWS, Attachment, MissingParams
 from .flows.evaluate_circuit import lang_directive, _pick
@@ -151,7 +150,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="ACM Orchestrator", lifespan=lifespan)
-app.include_router(openai_router)
 app.include_router(line_router)
 app.mount("/metrics", metrics.asgi_app)
 
