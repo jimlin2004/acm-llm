@@ -13,7 +13,6 @@ sim-server/
 │   ├── main.py         FastAPI + bearer auth + response-size guard
 │   ├── simulator.py    Spawn ngspice, parse metrics/waveforms, time-out
 │   └── schemas.py      SimRequest / SimResponse (matches the spec)
-├── tests/test_smoke.py
 ├── Dockerfile          Python 3.12 + ngspice
 ├── docker-compose.yml
 └── requirements.txt
