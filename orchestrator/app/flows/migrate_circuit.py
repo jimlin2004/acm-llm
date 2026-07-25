@@ -25,7 +25,7 @@ from langgraph.graph import END, START, StateGraph
 
 from .. import config
 from ..registry import Attachment, FlowSpec, MissingParams, register
-# Shared language selection: English default, vi/zh when the user writes it.
+# Shared language selection: English default, Traditional Chinese for CJK input.
 from .evaluate_circuit import _pick
 
 NETLIST_EXTENSIONS = (".cir", ".net", ".sp", ".spice")
@@ -48,7 +48,6 @@ def _format_help(message: str) -> str:
     return _pick(
         message,
         en="Migrate command syntax (fill in the template, then resend):\n",
-        vi="Cú pháp lệnh migrate (điền đúng mẫu, rồi gửi lại):\n",
         zh="migrate 指令格式（照範本填寫後重新傳送）：\n") + _FORMAT_TEMPLATE
 
 
@@ -113,7 +112,6 @@ def prepare(message: str, attachments: list[Attachment], params: dict) -> dict:
         raise MissingParams(_pick(
             message,
             en="No netlist found.\n\n",
-            vi="Không tìm thấy netlist.\n\n",
             zh="找不到 netlist。\n\n") + _format_help(message))
 
     return {
@@ -222,7 +220,6 @@ def _netlist_attachment(content: str, data: dict, state: "State") -> str:
     b64 = base64.b64encode(content.encode("utf-8")).decode()
     label = _pick(state.get("user_request", ""),
                   en="📎 **Migrated netlist:**",
-                  vi="📎 **Netlist đã migrate:**",
                   zh="📎 **遷移後的 netlist：**")
     return f"{label} [{fname}](data:text/x-spice;base64,{b64})"
 
@@ -270,7 +267,6 @@ def _metrics_line(data: dict, req: str) -> str | None:
     joined = " · ".join(parts)
     return _pick(req,
                  en=f"- **Measured:** {joined}",
-                 vi=f"- **Số đo:** {joined}",
                  zh=f"- **量測值:** {joined}")
 
 
@@ -282,7 +278,6 @@ def _spec_lines(data: dict, req: str) -> list:
         return []
     head = _pick(req,
                  en="- **Spec check:**",
-                 vi="- **Kiểm tra spec:**",
                  zh="- **規格檢查:**")
     out = [head]
     for it in items[:8]:
@@ -306,15 +301,12 @@ def _report(data: dict, charts: list, req: str = "") -> str:
     # and the internal dry_run flag are noise/confusing to the end user — the
     # migration ✅/❌ plus the per-spec check below say everything that matters.
     outcome = (_pick(req, en="- **Migration:** ✅ success",
-                     vi="- **Migrate:** ✅ thành công",
                      zh="- **遷移:** ✅ 成功")
                if mig.get("success") else
                _pick(req, en="- **Migration:** ❌ failed",
-                     vi="- **Migrate:** ❌ thất bại",
                      zh="- **遷移:** ❌ 失敗"))
     lines = [_pick(req,
                    en=f"### Migration result `{src}` → `{tgt}`",
-                   vi=f"### Kết quả migrate `{src}` → `{tgt}`",
                    zh=f"### Migrate 結果 `{src}` → `{tgt}`"),
              outcome]
     # Concrete evaluation: measured metrics + per-spec pass/fail (from HSPICE +
@@ -326,7 +318,6 @@ def _report(data: dict, charts: list, req: str = "") -> str:
     findings = val.get("findings") or []
     if findings:
         lines.append(_pick(req, en="- **Validation findings:**",
-                           vi="- **Ghi chú validation:**",
                            zh="- **驗證說明:**"))
         lines += [f"  - {f}" for f in findings[:8]]
     if val.get("error"):
@@ -365,8 +356,6 @@ def _unsupported_message(pf: dict, req: str) -> str:
             req,
             en=f"⚠️ Migration `{src}` → `{tgt}` isn't supported yet: there's no "
                f"device mapping table for this PDK pair.",
-            vi=f"⚠️ Chưa hỗ trợ migrate `{src}` → `{tgt}`: chưa có bảng mapping "
-               f"device cho cặp PDK này.",
             zh=f"⚠️ 尚未支援 `{src}` → `{tgt}` 遷移：此 PDK 配對沒有元件對應表。")
     if unsupported:
         listing = ", ".join(f"`{d}`" for d in unsupported)
@@ -376,18 +365,12 @@ def _unsupported_message(pf: dict, req: str) -> str:
                 f"Unsupported device(s): {listing}\n\n"
                 f"Only devices present in the mapping table can be migrated — "
                 f"support for more device/circuit types is being added."),
-            vi=(f"⚠️ Mạch này chưa migrate được `{src}` → `{tgt}`.\n\n"
-                f"Device chưa hỗ trợ: {listing}\n\n"
-                f"Chỉ những device đã có trong bảng mapping mới migrate được — "
-                f"các loại device/mạch khác đang được bổ sung dần."),
             zh=(f"⚠️ 此電路尚無法遷移 `{src}` → `{tgt}`。\n\n"
                 f"不支援的元件：{listing}\n\n"
                 f"只有對應表中的元件才能遷移，其他元件/電路型別正在陸續新增。"))
     return _pick(
         req,
         en=f"⚠️ Can't confirm migration support for `{src}` → `{tgt}`: "
-           f"{pf.get('message', '')}",
-        vi=f"⚠️ Chưa xác nhận được khả năng migrate `{src}` → `{tgt}`: "
            f"{pf.get('message', '')}",
         zh=f"⚠️ 無法確認 `{src}` → `{tgt}` 的遷移支援：{pf.get('message', '')}")
 
@@ -469,7 +452,6 @@ async def stream_run(state: State) -> AsyncIterator[dict]:
     yield {"type": "status",
            "text": _pick(state.get("user_request", ""),
                          en="Running the circuit migration pipeline (migration_pipe)...",
-                         vi="Đang chạy pipeline migrate mạch (migration_pipe)...",
                          zh="正在執行電路 migrate pipeline（migration_pipe）...")}
     out = await migrate(dict(state))
     yield {"type": "delta", "text": out["answer"]}

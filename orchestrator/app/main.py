@@ -31,21 +31,20 @@ log = logging.getLogger("orchestrator")
 
 
 # Does the message talk about a picture/diagram? Used to re-attach the
-# session's stored photo to a text-only follow-up. "(?<!mô )hình" avoids the
-# Vietnamese word "mô hình" (model), which is not an image reference.
+# session's stored photo to a text-only follow-up.
 _IMG_REF = re.compile(
-    r"(?iu)ảnh|(?<!mô )hình|đồ thị|biểu đồ|sơ đồ|schematic|diagram|image|"
+    r"(?iu)schematic|diagram|image|"
     r"picture|photo|chart|graph|figure|screenshot|图|圖|照片|"
-    # Deictic follow-ups after a just-shared image ("what is this?", "cái này
-    # là gì?", "这是什么?") carry no image noun — LINE can't caption an image,
+    # Deictic follow-ups after a just-shared image ("what is this?",
+    # "这是什么?") carry no image noun — LINE can't caption an image,
     # so the question always arrives as a separate, keyword-free message.
-    r"\bthis\b|\bthat\b|này|đây|这|這|那")
+    r"\bthis\b|\bthat\b|这|這|那")
 
 # Does the message talk about a netlist/circuit? Used to re-attach the session's
 # stored netlist to a text-only follow-up ("analyze the netlist above"), the way
-# _IMG_REF re-attaches a stored photo. "mạch" covers the Vietnamese for circuit.
+# _IMG_REF re-attaches a stored photo.
 _NETLIST_REF = re.compile(
-    r"(?iu)netlist|mạch|circuit|电路|電路|\.cir\b|\.sp\b|\.spice\b")
+    r"(?iu)netlist|circuit|电路|電路|\.cir\b|\.sp\b|\.spice\b")
 
 
 def _now_line() -> str:
@@ -78,23 +77,21 @@ _WEBSEARCH_DIRECTIVE = (
 
 
 # A follow-up asking where the previous answer came from ("which website did
-# you use?", "nguồn nào?", "哪个网站?"). Such a turn does not itself trigger a
-# web_search, so it returns no citations — we re-attach the last search turn's
-# cached sources instead. Only consulted when the current turn found none, so
-# an over-broad match at worst appends slightly stale sources to a chat reply.
+# you use?", "哪个网站?"). Such a turn does not itself trigger a web_search, so
+# it returns no citations — we re-attach the last search turn's cached sources
+# instead. Only consulted when the current turn found none, so an over-broad
+# match at worst appends slightly stale sources to a chat reply.
 _SOURCE_REF = re.compile(
     r"(?iu)which (web ?site|site|source|link|url|page)|"
     r"what (web ?site|source|link)|where (did|do) you (get|find|read)|"
     r"your source|the (source|link|reference)|"
-    r"(web ?site|trang( web)?|nguồn|link|nguồn tin) nào|"
-    r"nguồn (ở|từ) đâu|lấy (nó )?(từ|ở) đâu|trích dẫn|tham khảo|"
     r"哪个?网站|哪個?網站|哪个?来源|哪個?來源|來源|来源|参考|參考|链接|連結|鏈接")
 
 
 def _format_sources(message: str, cites: list) -> str:
     if not cites:
         return ""
-    label = _pick(message, en="Sources", vi="Nguồn", zh="來源")
+    label = _pick(message, en="Sources", zh="來源")
     lines = "\n".join(f"- {title}: {url}"
                       for title, url in cites[:config.WEBSEARCH_MAX_SOURCES])
     return f"\n\n🔎 {label}:\n{lines}"
@@ -183,7 +180,6 @@ def _busy_reply(message: str) -> dict:
         message,
         en="The system is handling several requests right now — please try "
            "again in a minute.",
-        vi="Hệ thống đang xử lý nhiều yêu cầu — bạn thử lại sau một phút nhé.",
         zh="系統目前正在處理多個請求，請稍後再試。")
     result = {"thread_id": None, "status": "busy", "message": text}
     access_log.end_request(None, None, "busy", message, text)
@@ -244,9 +240,6 @@ async def _image_flow(req: "StartRequest", history: list) -> dict:
                 en="Sorry, I couldn't process this image (it may be too "
                    "large, corrupted, or in an unsupported format). Please "
                    "try a clearer photo or paste the netlist as text.",
-                vi="Xin lỗi, tôi không xử lý được ảnh này (có thể ảnh quá "
-                   "lớn, bị hỏng hoặc sai định dạng). Bạn thử gửi ảnh rõ "
-                   "hơn hoặc dán netlist dạng text nhé.",
                 zh="抱歉，無法處理這張圖片（可能過大、損壞或格式不支援）。"
                    "請改傳更清晰的照片，或直接貼上 netlist 文字。")
         return {"thread_id": None, "status": "completed", "message": answer}
@@ -266,7 +259,6 @@ async def _image_flow(req: "StartRequest", history: list) -> dict:
         header = _pick(
             req.message,
             en="**Netlist transcribed from your image** (please verify):",
-            vi="**Netlist trích từ ảnh bạn gửi** (hãy kiểm tra lại):",
             zh="**已從您的圖片轉錄出 netlist**（請確認）：")
         block = f"{header}\n```\n{netlist}\n```\n"
         if extracted["notes"]:
@@ -372,7 +364,7 @@ async def _flow_start_impl(req: StartRequest):
             if ctx is not None:  # router misroute answered as chat — log truth
                 ctx["flow_id"] = f"chat (fallback from {flow_id})"
             # Route through the same chat path as flow_id=="chat" so a misrouted
-            # question (e.g. the router sends a terse "link"/"nguồn nào" to a
+            # question (e.g. the router sends a terse "link"/"source?" to a
             # circuit flow) still gets web search AND the cached-source re-attach.
             answer = await _chat_answer(req.message, history,
                                         memory if req.use_memory else None,

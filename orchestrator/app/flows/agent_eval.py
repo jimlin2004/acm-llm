@@ -251,14 +251,11 @@ def _charts_suffix(state: State) -> str:
 def _status(name: str, req: str) -> str:
     if name == "simulate_circuit":
         return _pick(req, en="Running the simulation (ngspice)...",
-                     vi="Đang chạy mô phỏng (ngspice)...",
                      zh="正在執行模擬（ngspice）...")
     if name == "plot_waveforms":
         return _pick(req, en="Plotting the waveforms...",
-                     vi="Đang vẽ đồ thị waveform...",
                      zh="正在繪製波形圖...")
     return _pick(req, en=f"Calling {name}...",
-                 vi=f"Đang gọi {name}...",
                  zh=f"正在呼叫 {name}...")
 
 
@@ -312,8 +309,6 @@ def prepare(message: str, attachments: list[Attachment], params: dict) -> dict:
             message,
             en="No netlist found. Please attach a .cir file or paste the "
                "circuit into your message.",
-            vi="Không tìm thấy netlist. Vui lòng đính kèm file .cir "
-               "hoặc dán nội dung mạch vào tin nhắn.",
             zh="找不到 netlist。請附上 .cir 檔案，或將電路內容貼到訊息中。"))
     return {
         "user_request": message,

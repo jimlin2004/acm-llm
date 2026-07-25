@@ -22,14 +22,9 @@ from ..tools import charts, simulator
 NETLIST_EXTENSIONS = (".cir", ".net", ".sp", ".spice")
 
 # Localize user-facing status/notices to the language of the user's request.
-# The model's primary languages are Traditional Chinese + English, so the
-# DEFAULT is English; Vietnamese is used only when the user actually writes it,
-# and Traditional Chinese when the request contains CJK characters.
-_VI_CHARS = "ăâđêôơưĂÂĐÊÔƠƯàáảãạằắẳẵặầấẩẫậèéẻẽẹềếểễệìíỉĩịòóỏõọồốổỗộờớởỡợùúủũụừứửữựỳýỷỹỵ"
-
-
-def _is_vi(text: str) -> bool:
-    return bool(text) and any(c in _VI_CHARS for c in text)
+# The flow supports two languages only: Traditional Chinese + English. English
+# is the default; Traditional Chinese is used when the request contains CJK
+# characters. Anything else falls back to English.
 
 
 def _is_zh(text: str) -> bool:
@@ -38,20 +33,15 @@ def _is_zh(text: str) -> bool:
 
 
 def _lang(text: str) -> str:
-    """Pick the reply language: 'vi' only if the user writes Vietnamese, 'zh'
-    for Chinese, else 'en' (the safe default for this model)."""
-    if _is_vi(text):
-        return "vi"
-    if _is_zh(text):
-        return "zh"
-    return "en"
+    """Pick the reply language: 'zh' for Chinese, else 'en' (the default)."""
+    return "zh" if _is_zh(text) else "en"
 
 
-def _pick(text: str, en: str, vi: str, zh: str) -> str:
-    return {"vi": vi, "zh": zh}.get(_lang(text), en)
+def _pick(text: str, en: str, zh: str) -> str:
+    return zh if _lang(text) == "zh" else en
 
 
-_LANG_NAME = {"en": "English", "vi": "Vietnamese", "zh": "Traditional Chinese"}
+_LANG_NAME = {"en": "English", "zh": "Traditional Chinese"}
 
 
 def lang_directive(text: str) -> str:
@@ -207,8 +197,6 @@ def _answer_suffix(state: State) -> str:
             state.get("user_request", ""),
             en="\n\n---\n⚠️ **Lint flagged a few things to note (simulated "
                "as-is, the netlist was NOT modified):**\n",
-            vi="\n\n---\n⚠️ **Lint phát hiện vài điểm cần lưu ý (đã mô phỏng "
-               "nguyên trạng, KHÔNG tự sửa netlist):**\n",
             zh="\n\n---\n⚠️ **Lint 發現幾點需注意（已按原樣模擬，未修改 "
                "netlist）：**\n")
         suffix += header + "\n".join(f"- {w}" for w in warnings)
@@ -236,13 +224,11 @@ async def stream_run(state: State) -> AsyncIterator[dict]:
 
     yield {"type": "status",
            "text": _pick(req, en="Running the simulation (ngspice)...",
-                         vi="Đang chạy mô phỏng (ngspice)...",
                          zh="正在執行模擬（ngspice）...")}
     state.update(await run_simulation(state))
 
     yield {"type": "status",
            "text": _pick(req, en="Evaluating results...",
-                         vi="Đang đánh giá kết quả...",
                          zh="正在評估結果...")}
     async for delta in llm.stream_with_thinking(_eval_messages(state), temperature=0.3):
         yield {"type": "delta", "text": delta}
@@ -274,8 +260,6 @@ def prepare(message: str, attachments: list[Attachment], params: dict) -> dict:
             message,
             en="No netlist found. Please attach a .cir file or paste the "
                "circuit into your message.",
-            vi="Không tìm thấy netlist. Vui lòng đính kèm file .cir "
-               "hoặc dán nội dung mạch vào tin nhắn.",
             zh="找不到 netlist。請附上 .cir 檔案，或將電路內容貼到訊息中。"))
     return {
         "user_request": message,

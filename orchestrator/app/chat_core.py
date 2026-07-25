@@ -21,14 +21,9 @@ from collections import deque
 # ---------------------------------------------------------------------------
 # Language
 # ---------------------------------------------------------------------------
-_VI_CHARS = ("ăâđêôơưĂÂĐÊÔƠƯàáảãạằắẳẵặầấẩẫậèéẻẽẹềếểễệìíỉĩịòóỏõọồốổỗộờ"
-             "ớởỡợùúủũụừứửữựỳýỷỹỵ")
-
-
 def detect_lang(text: str) -> str:
-    """vi if Vietnamese diacritics, zh if CJK, else en. English when no signal."""
-    if text and any(c in _VI_CHARS for c in text):
-        return "vi"
+    """zh if CJK, else en. Only Traditional Chinese + English are supported;
+    anything else (English is the signal-free default)."""
     if text and any("一" <= c <= "鿿" for c in text):
         return "zh"
     return "en"
@@ -41,28 +36,22 @@ MSG = {
     "timeout": {
         "en": "The request took too long and was cancelled. "
               "Please try again or send a simpler circuit.",
-        "vi": "Yêu cầu xử lý quá lâu và đã bị hủy. "
-              "Vui lòng thử lại hoặc gửi mạch đơn giản hơn.",
         "zh": "請求處理時間過長，已被取消。請重試或傳送較簡單的電路。",
     },
     "error": {
         "en": "Sorry, something went wrong while handling the request: {e}",
-        "vi": "Xin lỗi, có lỗi khi xử lý yêu cầu: {e}",
         "zh": "抱歉，處理請求時發生錯誤：{e}",
     },
     "empty": {
-        "en": "(no content)", "vi": "(không có nội dung)", "zh": "（沒有內容）",
+        "en": "(no content)", "zh": "（沒有內容）",
     },
     "charts_failed": {
         "en": "(Failed to send {n} chart(s).)",
-        "vi": "(Không gửi được {n} biểu đồ.)",
         "zh": "（有 {n} 張圖表傳送失敗。）",
     },
     "unknown_cmd": {
         "en": "Unknown command {cmd}. Type /help for the list of commands, "
               "or just send a question or attach a .cir file.",
-        "vi": "Lệnh {cmd} không tồn tại. Gõ /help để xem danh sách lệnh, "
-              "hoặc gửi câu hỏi / đính kèm file .cir.",
         "zh": "無此指令 {cmd}。輸入 /help 查看指令清單，也可以直接提問或附上 .cir 檔案。",
     },
     "help": {
@@ -73,13 +62,6 @@ MSG = {
               "/feedback <message> – send feedback to the dev team\n"
               "/cancel – cancel the task I am working on\n\n"
               "You can also just send a question, paste a netlist, or attach a .cir file.",
-        "vi": "Các lệnh hỗ trợ:\n"
-              "/start, /new, /reset – bắt đầu phiên mới (xoá ngữ cảnh)\n"
-              "/help – danh sách này\n/info – tôi làm được gì\n/about – giới thiệu về tôi\n"
-              "/migrate – migrate PDK (gõ /migrate để xem mẫu)\n"
-              "/feedback <nội dung> – gửi góp ý cho đội phát triển\n"
-              "/cancel – huỷ tác vụ đang chạy\n\n"
-              "Ngoài ra cứ gửi câu hỏi, dán netlist hoặc đính kèm file .cir.",
         "zh": "可用指令：\n"
               "/start、/new、/reset – 開始新工作階段（清除上下文）\n"
               "/help – 本清單\n/info – 我能做什麼\n/about – 關於我\n"
@@ -94,12 +76,6 @@ MSG = {
               "• Evaluate the results (gain, bandwidth, phase margin...) and plot Bode/transient charts\n"
               "• Migrate a netlist between PDKs (/migrate)\n"
               "• Answer analog/digital circuit-theory questions",
-        "vi": "Tôi là ACM Assistant — trợ lý thiết kế mạch của ACM Lab. Tôi có thể:\n"
-              "• Mô phỏng netlist SPICE (đính kèm .cir hoặc dán vào chat) trên ngspice\n"
-              "• Đọc ảnh sơ đồ mạch, trích netlist và phân tích\n"
-              "• Đánh giá kết quả (gain, băng thông, phase margin...) và vẽ biểu đồ Bode/transient\n"
-              "• Migrate netlist giữa các PDK (/migrate)\n"
-              "• Trả lời câu hỏi lý thuyết mạch analog/digital",
         "zh": "我是 ACM Assistant — ACM Lab 的電路設計助理。我可以：\n"
               "• 在 ngspice 上模擬 SPICE netlist（附上 .cir 或直接貼上）\n"
               "• 讀取電路圖照片，轉錄成 netlist 並分析\n"
@@ -110,79 +86,63 @@ MSG = {
         "en": "ACM Assistant — ACM Lab's assistant, powered by a cloud LLM plus a "
               "local ngspice simulation server. Purpose: evaluate, debug and migrate "
               "circuits right from chat. Feedback: /feedback",
-        "vi": "ACM Assistant — trợ lý của ACM Lab, chạy trên LLM cloud cùng sim server "
-              "ngspice chạy local. Mục đích: đánh giá, debug và migrate mạch ngay trong "
-              "chat. Góp ý: /feedback",
         "zh": "ACM Assistant — ACM Lab 的助理，由雲端 LLM 與本機 ngspice 模擬伺服器驅動。"
               "目的：在聊天中直接評估、除錯與遷移電路。意見回饋：/feedback",
     },
     "feedback_ok": {
         "en": "Thanks! Your feedback has been recorded.",
-        "vi": "Cảm ơn! Góp ý của bạn đã được ghi lại.",
         "zh": "謝謝！您的意見已記錄。",
     },
     "feedback_usage": {
         "en": "Usage: /feedback <your message>",
-        "vi": "Cách dùng: /feedback <nội dung góp ý>",
         "zh": "用法：/feedback <您的意見>",
     },
     "cancel_ok": {
         "en": "The running task has been cancelled.",
-        "vi": "Đã huỷ tác vụ đang chạy.", "zh": "已取消進行中的任務。",
+        "zh": "已取消進行中的任務。",
     },
     "cancel_none": {
         "en": "No task is currently running.",
-        "vi": "Không có tác vụ nào đang chạy.", "zh": "目前沒有進行中的任務。",
+        "zh": "目前沒有進行中的任務。",
     },
     "not_allowed": {
         "en": "This bot is private to ACM Lab members. Please contact the admin to get access.",
-        "vi": "Bot này chỉ dành cho thành viên ACM Lab. Vui lòng liên hệ admin để được cấp quyền.",
         "zh": "此機器人僅供 ACM Lab 成員使用，請聯絡管理員取得權限。",
     },
     "busy_chat": {
         "en": "⏳ I'm still working on your previous request — send /cancel to abort it first.",
-        "vi": "⏳ Tôi vẫn đang xử lý yêu cầu trước của bạn — gửi /cancel nếu muốn huỷ nó.",
         "zh": "⏳ 我還在處理您上一個請求 — 想中止請先傳送 /cancel。",
     },
     "rate_limited": {
         "en": "You're sending requests too quickly — please wait a moment and try again.",
-        "vi": "Bạn đang gửi yêu cầu quá nhanh — vui lòng đợi một chút rồi thử lại.",
         "zh": "您傳送請求的速度過快，請稍候再試。",
     },
     "media_failed": {
         "en": "I couldn't download your file/image. Please try sending it again.",
-        "vi": "Tôi không tải được file/ảnh của bạn. Vui lòng thử gửi lại.",
         "zh": "無法下載您的檔案/圖片，請重新傳送一次。",
     },
     "zip_hint": {
         "en": "📦 Tip: LINE won't let you attach a bare .cir file. Zip the netlist "
               "(.cir/.sp/.spice/.net/.ckt) and send the .zip — I'll open it automatically.",
-        "vi": "📦 Mẹo: LINE không cho đính kèm trực tiếp file .cir. Hãy nén netlist "
-              "(.cir/.sp/.spice/.net/.ckt) thành .zip rồi gửi — tôi sẽ tự mở.",
         "zh": "📦 提示：LINE 無法直接附上 .cir 檔案。請將 netlist "
               "（.cir/.sp/.spice/.net/.ckt）壓縮成 .zip 後傳送，我會自動開啟。",
     },
     "zip_no_netlist": {
         "en": "I opened your .zip but found no SPICE netlist inside "
               "(.cir/.sp/.spice/.net/.ckt). Please zip the netlist file and send it again.",
-        "vi": "Tôi đã mở file .zip nhưng không thấy netlist SPICE bên trong "
-              "(.cir/.sp/.spice/.net/.ckt). Vui lòng nén file netlist rồi gửi lại.",
         "zh": "我打開了您的 .zip，但裡面找不到 SPICE netlist "
               "（.cir/.sp/.spice/.net/.ckt）。請將 netlist 檔案壓縮後重新傳送。",
     },
     "greeting": {
         "en": "👋 New session started.\nHow can I help you today? You can paste a netlist, "
               "upload a .cir file, or ask me anything! Type /help for the list of commands.",
-        "vi": "👋 Đã bắt đầu phiên mới.\nTôi có thể giúp gì cho bạn? Bạn có thể dán netlist, "
-              "tải lên file .cir, hoặc hỏi bất cứ điều gì! Gõ /help để xem danh sách lệnh.",
         "zh": "👋 已開始新的工作階段。\n有什麼可以幫您？您可以貼上 netlist、上傳 .cir 檔案，"
               "或直接提問！輸入 /help 查看指令清單。",
     },
 }
 
 # Analysis prompt used when a bare .cir / photo arrives with no caption.
-ANALYZE_PROMPT = {"vi": "Phân tích mạch này", "zh": "分析這個電路",
-                  "en": "Analyze this circuit"}
+ANALYZE_PROMPT = {"zh": "分析這個電路", "en": "Analyze this circuit"}
 
 
 def pick(lang: str, key: str, **kw) -> str:

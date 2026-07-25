@@ -151,7 +151,7 @@ def _to_line_text(text: str) -> str:
 
 
 # Sentence enders (Latin + CJK) used to break a long answer on a whole sentence
-# rather than mid-word. `…` and CJK 。！？ included for VI/ZH replies.
+# rather than mid-word. `…` and CJK 。！？ included for Chinese replies.
 _SENT_END_RE = re.compile(r"[\.!?…。！？]['\"”’)]?(?=\s|$)")
 
 
@@ -262,7 +262,7 @@ class _Responder:
 LOADING_URL = "https://api.line.me/v2/bot/chat/loading/start"
 # One-time "working" ack for group/room chats (LINE's loading animation is
 # 1:1-only, so groups get a short message instead).
-_WORKING = {"en": "⏳ Working on it…", "vi": "⏳ Đang xử lý…", "zh": "⏳ 處理中…"}
+_WORKING = {"en": "⏳ Working on it…", "zh": "⏳ 處理中…"}
 
 
 async def _start_loading(uid: str, seconds: int = 60):
@@ -508,7 +508,7 @@ def _file_link(uid: str, fname: str, data_uri: str) -> str | None:
     hosted = _host_media(raw, "text/plain; charset=utf-8", fname, ext)
     if not hosted:
         return None
-    label = {"vi": "📎 Netlist đã migrate", "zh": "📎 遷移後的 netlist"}.get(
+    label = {"zh": "📎 遷移後的 netlist"}.get(
         _chat_lang.get(uid, "en"), "📎 Migrated netlist")
     return f"{label}: {hosted}"
 
