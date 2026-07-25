@@ -1,5 +1,5 @@
 ###############################################################################
-# Orchestrator stack (see docs/orchestrator.md + orchestrator/README.md)
+# Orchestrator stack (see orchestrator/README.md + DEPLOYMENT.md)
 #
 # Standalone compose file. LLM calls go to the OpenAI API (cloud); set the
 # LLM_* / OPENAI keys in .env.

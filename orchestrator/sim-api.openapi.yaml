@@ -9,8 +9,8 @@ info:
     can be swapped in just by changing the `SIM_API_URL` environment
     variable, with no orchestrator code changes.
 
-    See docs/sim-api-spec.md for the operational requirements (timeout,
-    retry, response size).
+    See sim-server/README.md ("Spec conformance") for the operational
+    requirements (timeout, retry, response size).
 
 servers:
   - url: http://sim-server:9000

@@ -1,9 +1,9 @@
 # sim-server
 
 SPICE circuit simulation server — implements the contract in
-[`docs/sim-api-spec.md`](../docs/sim-api-spec.md) /
-[`docs/sim-api.openapi.yaml`](../docs/sim-api.openapi.yaml).
-The orchestrator only needs to point `SIM_API_URL` at this server.
+[`orchestrator/sim-api.openapi.yaml`](../orchestrator/sim-api.openapi.yaml)
+(the machine-readable source of truth). The orchestrator only needs to point
+`SIM_API_URL` at this server.
 
 ## Layout
 

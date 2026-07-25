@@ -1,7 +1,7 @@
 # Orchestrator
 
-Implementation of `docs/orchestrator.md`: Router (LLM) → Flow engine (LangGraph,
-durable checkpoints, human-in-the-loop) → Responder. Flows:
+Router (LLM) → Flow engine (LangGraph, durable checkpoints, human-in-the-loop)
+→ Responder. Flows:
 - **`evaluate_circuit`** — fixed pipeline: send a `.cir` netlist to the
   simulation server, then LLM-assess the results.
 - **`agent_eval`** — agentic alternative: a tool-calling model
@@ -10,7 +10,7 @@ durable checkpoints, human-in-the-loop) → Responder. Flows:
   directly). Runs on the same netlist so the two orchestration styles can be
   compared.
 
-Differences vs. the design doc, matching the live stack:
+Notes on the live stack:
 - LLM calls go to the **OpenAI API** (`api.openai.com/v1`, model from
   `LLM_MODEL`) — cloud-hosted, no local model server.
 - Checkpointer is **SQLite** (`/data/checkpoints.db`) — no Postgres server is
@@ -24,9 +24,8 @@ docker compose -f docker-compose.orchestrator.yml up -d --build
 
 Services: `orchestrator` on **:8100** and `sim-server` (host-published on
 **:9001**, container port 9000). Point at a different simulator by
-setting `SIM_API_URL` in `.env` — the API it must publish is specified
-in [`docs/sim-api-spec.md`](../docs/sim-api-spec.md) (OpenAPI:
-[`sim-api.openapi.yaml`](sim-api.openapi.yaml)).
+setting `SIM_API_URL` in `.env` — the API it must publish is specified in
+[`sim-api.openapi.yaml`](sim-api.openapi.yaml) (the machine-readable contract).
 
 ## API
 
@@ -34,7 +33,7 @@ in [`docs/sim-api-spec.md`](../docs/sim-api-spec.md) (OpenAPI:
 # start a flow — the LLM router picks the flow from the message
 curl -X POST localhost:8100/flow/start -H 'Content-Type: application/json' -d '{
   "user_id": "duong",
-  "message": "Đánh giá giúp tôi mạch trong file rc.cir",
+  "message": "Please evaluate the circuit in the rc.cir file",
   "attachments": [{"name": "rc.cir", "content": "* RC filter\nV1 in 0 AC 1\nR1 in out 1k\nC1 out 0 159n\n.ac dec 10 10 1Meg\n.end"}]
 }'
 # → { "thread_id": ..., "status": "completed", "message": "<assessment>" }
