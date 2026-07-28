@@ -44,7 +44,9 @@ from . import chat_core, config
 router = APIRouter()
 log = logging.getLogger("line")
 
-SELF = "http://127.0.0.1:8000"
+# Loopback to this orchestrator's own API (adapter re-enters via HTTP so it
+# reuses the shared pipeline). Override SELF_URL if uvicorn's port changes.
+SELF = os.environ.get("SELF_URL", "http://127.0.0.1:8000").rstrip("/")
 CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET", "").encode()
 ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 PUSH_URL = "https://api.line.me/v2/bot/message/push"
