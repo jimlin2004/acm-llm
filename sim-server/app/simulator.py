@@ -462,6 +462,11 @@ def _normalize_pdk_libs(netlist: str) -> tuple[str, list[str]]:
 
 
 async def run_simulation(netlist: str, options: dict) -> SimOutcome:
+    # Engine switch: same contract, different backend. Default stays ngspice.
+    if str(options.get("engine", "ngspice")).lower() == "hspice":
+        from . import hspice          # lazy import avoids a module cycle
+        return await hspice.run_hspice(netlist, options)
+
     netlist, pdk_notes = _normalize_pdk_libs(netlist)
     out_node = _detect_output_node(netlist)
     if out_node != "out":

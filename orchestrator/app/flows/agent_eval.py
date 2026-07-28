@@ -104,6 +104,28 @@ TOOLS = [
         },
     }},
     {"type": "function", "function": {
+        "name": "simulate_hspice",
+        "description": (
+            "Run a foundry-grade HSPICE simulation and return metrics/logs. A "
+            "SEPARATE simulator from simulate_circuit (which uses ngspice): "
+            "prefer this when the user explicitly asks for HSPICE, or the "
+            "netlist targets a licensed PDK. Metrics only — no waveform charts. "
+            "No arguments simulates the loaded netlist; pass a complete edited "
+            "netlist to change it."),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "netlist": {
+                    "type": "string",
+                    "description": (
+                        "Complete SPICE netlist to simulate INSTEAD of the "
+                        "user's original (must include all lines up to .end). "
+                        "Omit to simulate the original."),
+                },
+            },
+        },
+    }},
+    {"type": "function", "function": {
         "name": "plot_waveforms",
         "description": (
             "Render PNG charts from the waveforms of the most recent "
@@ -111,24 +133,53 @@ TOOLS = [
             "include_waveforms=true."),
         "parameters": {"type": "object", "properties": {}},
     }},
+    {"type": "function", "function": {
+        "name": "inspect_netlist",
+        "description": (
+            "Parse the loaded netlist and return a structural summary — element "
+            "counts by device type and the analyses it declares — WITHOUT "
+            "simulating. Cheap and local; use it to answer 'what's in this "
+            "circuit?' or to decide what to simulate. Pass a netlist to inspect "
+            "a different one."),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "netlist": {
+                    "type": "string",
+                    "description": "Netlist to inspect instead of the loaded one.",
+                },
+            },
+        },
+    }},
 ]
 
 
-async def _exec_simulate(state: State, args: dict) -> str:
-    opts = {"include_waveforms": bool(args.get("include_waveforms", True))}
-    # The agent may pass an edited netlist (user asked for a modification);
-    # otherwise simulate the user's netlist as-is. A bare fragment without
-    # .end would silently error out server-side — reject it early instead.
+async def _run_sim(state: State, args: dict, engine: str, *, waveforms: bool) -> str:
+    """Shared body for both simulator tools. The agent may pass an edited netlist
+    (user asked for a modification); otherwise simulate the loaded one. `engine`
+    selects the sim-server backend (ngspice / hspice)."""
     netlist = (args.get("netlist") or "").strip()
+    # A bare fragment without .end would silently error out server-side.
     if netlist and ".end" not in netlist.lower():
         return ("Rejected: `netlist` must be a COMPLETE netlist including "
                 "the .end line. Send the whole edited file, not a fragment.")
+    opts = {"engine": engine}
+    if waveforms:
+        opts["include_waveforms"] = bool(args.get("include_waveforms", True))
     sim = await simulator.simulate(netlist or state["netlist"], opts)
     # Keep the (large) waveform arrays out of the prompt; stash for plot_waveforms.
-    waveforms = sim.pop("waveforms", None)
-    if waveforms:
-        state["waveforms"] = waveforms
+    wf = sim.pop("waveforms", None)
+    if wf:
+        state["waveforms"] = wf
     return json.dumps(sim, ensure_ascii=False)
+
+
+async def _exec_simulate(state: State, args: dict) -> str:   # ngspice (full waveforms)
+    return await _run_sim(state, args, "ngspice", waveforms=True)
+
+
+async def _exec_hspice(state: State, args: dict) -> str:     # hspice (metrics only)
+    return await _run_sim(state, args, "hspice", waveforms=False)
 
 
 async def _exec_plot(state: State, args: dict) -> str:
@@ -144,7 +195,45 @@ async def _exec_plot(state: State, args: dict) -> str:
             else "No charts could be rendered from the waveforms.")
 
 
-TOOL_EXEC = {"simulate_circuit": _exec_simulate, "plot_waveforms": _exec_plot}
+# SPICE element prefix -> friendly device name (first char of an element line).
+_DEV_NAMES = {"r": "resistor", "c": "capacitor", "l": "inductor",
+              "v": "voltage_source", "i": "current_source", "d": "diode",
+              "q": "bjt", "m": "mosfet", "j": "jfet", "x": "subcircuit",
+              "e": "vcvs", "g": "vccs", "f": "cccs", "h": "ccvs", "k": "coupling"}
+_ANALYSES = ("op", "ac", "dc", "tran", "noise", "disto", "pz", "sens", "tf")
+
+
+async def _exec_inspect(state: State, args: dict) -> str:
+    """Pure-local tool: no external server. Counts elements by device type and
+    lists the declared analyses, straight from the netlist text."""
+    netlist = args.get("netlist") or state.get("netlist") or ""
+    counts: dict[str, int] = {}
+    analyses: list[str] = []
+    seen_title = False
+    for line in netlist.splitlines():
+        s = line.strip()
+        if not s or s.startswith("*"):
+            continue                       # blank / comment
+        if s.startswith("."):
+            tok = s[1:].split(None, 1)[0].lower()
+            if tok in _ANALYSES:
+                analyses.append(tok)
+            continue                       # dot-directive, not an element
+        if not seen_title:
+            seen_title = True              # SPICE line 1 is a title, not an element
+            continue
+        dev = _DEV_NAMES.get(s[0].lower(), "other")
+        counts[dev] = counts.get(dev, 0) + 1
+    summary = {"total_elements": sum(counts.values()),
+               "by_type": counts,
+               "analyses": sorted(set(analyses))}
+    return json.dumps(summary, ensure_ascii=False)
+
+
+TOOL_EXEC = {"simulate_circuit": _exec_simulate,
+             "simulate_hspice": _exec_hspice,
+             "plot_waveforms": _exec_plot,
+             "inspect_netlist": _exec_inspect}
 
 
 def _user_prompt(state: State) -> str:
