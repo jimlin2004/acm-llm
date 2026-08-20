@@ -86,6 +86,6 @@ services:
       # docker bridge gateway so Open WebUI (bridge net) still reaches it via
       # host.docker.internal; the LAN cannot.
       - "127.0.0.1:8100:8000"
-      - "172.17.0.1:8100:8000"
+      # - "172.17.0.1:8100:8000"
     volumes:
       - ./orchestrator/data:/data
