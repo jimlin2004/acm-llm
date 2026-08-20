@@ -19,3 +19,6 @@ venv/
 # Migration bundles (contain secrets — never commit)
 *.tar.gz
 *.tgz
+
+.vscode/
+tests/

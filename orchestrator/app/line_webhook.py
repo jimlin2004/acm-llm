@@ -70,16 +70,46 @@ _running: dict[str, asyncio.Task] = {}
 _rate = chat_core.RateLimiter(config.LINE_RATE_N, config.LINE_RATE_WINDOW)
 
 # Group/room chats are multi-party, so the bot must NOT answer every message —
-# only ones explicitly addressed to it with a "$bot"/"#bot"/"@bot" tag (a slash
-# command counts too). Anything else is merely observed for context. All three
+# only ones explicitly addressed to it with a "$bot"/"#bot"/"@bot"/"$analogbot"/"#analogbot"/"@analogbot"
+# tag (a slash command counts too). Anything else is merely observed for context. All three
 # prefixes are accepted because phone keyboards make "$" vs "#" easy to mix up.
-_BOT_TAG = re.compile(r"[$#@]bot\b", re.IGNORECASE)
+_BOT_TAG = re.compile(r"[$#@](?:analogbot|bot)\b", re.IGNORECASE)
 PROFILE_URL = "https://api.line.me/v2/bot/profile/{uid}"
 GROUP_MEMBER_URL = "https://api.line.me/v2/bot/group/{cid}/member/{uid}"
 ROOM_MEMBER_URL = "https://api.line.me/v2/bot/room/{rid}/member/{uid}"
 # displayName by userId — cached so observing every group message doesn't hit
 # the LINE profile API each time (one lookup per new speaker).
 _name_cache: dict[str, str] = {}
+
+
+def _extract_addressed_text(msg: dict) -> tuple[bool, str]:
+    """Check if a group message addresses the bot and extract the cleaned message.
+    Returns:
+        tuple[bool, str]: (is_addressed, cleaned_text)
+    """
+    text = msg.get("text", "")
+    stripped = text.strip()
+
+    # Slash commands (e.g. /help, /migrate, /start)
+    if stripped.startswith("/"):
+        return True, text
+
+    # Native LINE mention (when user tags the bot via LINE UI autocomplete)
+    mentionees = msg.get("mention", {}).get("mentionees", [])
+    for m in mentionees:
+        if m.get("isSelf"):  # The bot itself was mentioned
+            idx = m.get("index", 0)
+            length = m.get("length", 0)
+            # Remove the @mention substring and extract the actual user prompt
+            cleaned = (text[:idx] + text[idx + length:]).strip()
+            return True, cleaned
+
+    # Text prefix patterns: $bot / @AnalogBot / @bot / #bot
+    if _BOT_TAG.search(text):
+        cleaned = _BOT_TAG.sub(" ", text).strip()
+        return True, cleaned
+
+    return False, text
 
 
 def _is_group(uid: str) -> bool:
@@ -708,19 +738,18 @@ async def _handle_message_event(ev: dict):
     # "$bot ..." refers to them. Everything else is observed silently.
     if _is_group(uid):
         if mtype == "text":
-            text = msg.get("text", "")
-            addressed = text.strip().startswith("/") or bool(_BOT_TAG.search(text))
+            # text = msg.get("text", "")
+            # addressed = text.strip().startswith("/") or bool(_BOT_TAG.search(text))
+            addressed, text = _extract_addressed_text(msg)
             if not addressed:
                 if allowed:
-                    await _observe(uid, sender, text=text)
+                    await _observe(uid, sender, text=msg.get("text", ""))
                 return
             if not allowed:
                 log.warning("line denied sender=%s (allowlist)", sender)
                 await resp.text(_msg(uid, "not_allowed"))
                 return
-            if _BOT_TAG.search(text):
-                text = _BOT_TAG.sub(" ", text).strip()
-                if not text:                       # bare "$bot" -> show what I do
+            if not text:  # Bare mention or '$bot' with no query -> show help
                     await resp.text(_msg(uid, "info"))
                     return
             await _dispatch(resp, text)
