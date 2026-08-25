@@ -31,7 +31,7 @@ base, hook = sys.argv[1], sys.argv[2]
 token = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 for a in range(1, 7):
     try:
-        urllib.request.urlopen(base, timeout=5).read()   # wait until tunnel live
+        urllib.request.urlopen(base.rstrip("/") + "/health", timeout=5).read()   # wait until tunnel live
     except Exception:
         time.sleep(4); continue
     req = urllib.request.Request(

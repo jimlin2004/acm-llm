@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -45,6 +46,83 @@ _IMG_REF = re.compile(
 # _IMG_REF re-attaches a stored photo.
 _NETLIST_REF = re.compile(
     r"(?iu)netlist|circuit|电路|電路|\.cir\b|\.sp\b|\.spice\b")
+
+
+# Ambiguous-intent clarification: router.route() returns a multi-label
+# `candidates` list (see router.py); >=2 candidates means the router saw more
+# than one plausible flow, and it's this layer — not the LLM — that decides
+# that counts as "ask the user". The candidate list (plus the ORIGINAL message
+# and attachments, since a numeric reply like "1" carries none of the actual
+# request content) is kept per user for one follow-up turn.
+_CLARIFY_TTL = 180.0
+_pending_clarify: dict[str, dict] = {}
+
+# Short, user-facing description of what each flow would do, for the clarify
+# question. Falls back to the raw flow_id if a flow isn't listed here (still
+# functional, just less readable) so a newly added flow can't break this.
+_CLARIFY_LABELS = {
+    "evaluate_circuit": {
+        "en": "simulate this circuit as-is and evaluate the results",
+        "zh": "直接模擬這顆電路並評估結果",
+    },
+    "agent_eval": {
+        "en": "let the agent decide — it may tweak the circuit and re-simulate",
+        "zh": "讓助理視情況調整電路並重新模擬",
+    },
+    "migrate_circuit": {
+        "en": "migrate it to another PDK",
+        "zh": "把它遷移到另一個 PDK",
+    },
+    "chat": {
+        "en": "just answer as a general question (no simulation)",
+        "zh": "當作一般問答直接回覆（不跑模擬）",
+    },
+}
+
+
+def _clarify_question(message: str, candidates: list[str]) -> str:
+    """Build the clarify question in code (not via the LLM) so its wording
+    doesn't depend on a small model's language ability — the LLM's only job
+    was naming the candidates."""
+    def build(lang: str) -> str:
+        opts = "\n".join(
+            f"{i}) {_CLARIFY_LABELS.get(fid, {}).get(lang, fid)}"
+            for i, fid in enumerate(candidates, 1))
+        return (f"我不太確定您的意思，請問是要：\n{opts}\n\n請回覆數字，或再說明更多細節。"
+                if lang == "zh" else
+                f"I'm not sure which you mean — did you want to:\n{opts}\n\n"
+                f"Please reply with the number, or add more detail.")
+    return _pick(message, en=build("en"), zh=build("zh"))
+
+
+def _resolve_pending_clarify(user_id: str, message: str):
+    """Match a follow-up reply (number or flow keyword) against the candidates
+    from the last clarify question for this user. Consumes the entry either
+    way — a clarify only gets one follow-up attempt before routing fresh.
+
+    Returns (flow_id, original_message, original_attachments) so the caller
+    replays the ORIGINAL request against the chosen flow — a bare "1" reply
+    carries none of the actual netlist/request content — or None if nothing
+    (or nothing current) is pending."""
+    entry = _pending_clarify.pop(user_id, None)
+    if not entry or time.time() - entry["ts"] > _CLARIFY_TTL:
+        return None
+    candidates = entry["candidates"]
+    stripped = (message or "").strip()
+    chosen = None
+    m = re.match(r"[\s([]*([1-9])\b", stripped)
+    if m:
+        idx = int(m.group(1)) - 1
+        if 0 <= idx < len(candidates):
+            chosen = candidates[idx]
+    if chosen is None:
+        low = stripped.lower()
+        chosen = next((fid for fid in candidates
+                       if fid != "chat" and fid.lower() in low), None)
+    if chosen is None:
+        return None
+    attachments = [Attachment(a["name"], a["content"]) for a in entry["attachments"]]
+    return chosen, entry["message"], attachments
 
 
 def _now_line() -> str:
@@ -329,9 +407,22 @@ async def _flow_start_impl(req: StartRequest):
 
     flow_id, params = req.flow_id, dict(req.params)
     if flow_id is None and not req.images:
-        routed = await router.route(req.message, [a.name for a in attachments])
-        flow_id = routed["flow_id"]
-        params = {**routed["params"], **params}
+        resolved = _resolve_pending_clarify(req.user_id, req.message)
+        if resolved is not None:
+            flow_id, req.message, attachments = resolved
+        else:
+            routed = await router.route(req.message, [a.name for a in attachments])
+            candidates = routed["candidates"]
+            if len(candidates) >= 2:
+                _pending_clarify[req.user_id] = {
+                    "candidates": candidates, "message": req.message,
+                    "attachments": [{"name": a.name, "content": a.content}
+                                    for a in attachments],
+                    "ts": time.time()}
+                return {"thread_id": None, "status": "clarify",
+                        "message": _clarify_question(req.message, candidates)}
+            flow_id = candidates[0]
+            params = {**routed["params"], **params}
         log.info("routed to flow=%s params=%s", flow_id, list(params))
     ctx = access_log.request_ctx.get()
     if ctx is not None:
@@ -434,18 +525,42 @@ async def flow_stream(req: StartRequest):
     try:
         attachments = [Attachment(a.name, a.content) for a in req.attachments]
         flow_id, params = req.flow_id, dict(req.params)
+        clarify_question = None
         if flow_id is None and not req.images:
-            routed = await router.route(req.message,
-                                        [a.name for a in attachments])
-            flow_id = routed["flow_id"]
-            params = {**routed["params"], **params}
-            log.info("routed to flow=%s params=%s", flow_id, list(params))
+            resolved = _resolve_pending_clarify(req.user_id, req.message)
+            if resolved is not None:
+                flow_id, req.message, attachments = resolved
+            else:
+                routed = await router.route(req.message,
+                                            [a.name for a in attachments])
+                candidates = routed["candidates"]
+                if len(candidates) >= 2:
+                    _pending_clarify[req.user_id] = {
+                        "candidates": candidates, "message": req.message,
+                        "attachments": [{"name": a.name, "content": a.content}
+                                        for a in attachments],
+                        "ts": time.time()}
+                    clarify_question = _clarify_question(req.message, candidates)
+                else:
+                    flow_id = candidates[0]
+                    params = {**routed["params"], **params}
+            if flow_id is not None or clarify_question is not None:
+                log.info("routed to flow=%s params=%s", flow_id, list(params))
         ctx = access_log.request_ctx.get()
         if ctx is not None:
-            ctx["flow_id"] = flow_id or "vision"
+            ctx["flow_id"] = flow_id or ("clarify" if clarify_question else "vision")
     except Exception:
         _release_slot()
         raise
+
+    if clarify_question is not None:
+        async def gen_clarify():
+            try:
+                yield _sse({"type": "delta", "text": clarify_question})
+                yield _sse({"type": "done"})
+            finally:
+                _release_slot()
+        return StreamingResponse(gen_clarify(), media_type="text/event-stream")
 
     async def gen():
         # Same vision path as /flow/start, minus token streaming (the image

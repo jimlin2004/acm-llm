@@ -73,13 +73,30 @@ _rate = chat_core.RateLimiter(config.LINE_RATE_N, config.LINE_RATE_WINDOW)
 # only ones explicitly addressed to it with a "$bot"/"#bot"/"@bot"/"$analogbot"/"#analogbot"/"@analogbot"
 # tag (a slash command counts too). Anything else is merely observed for context. All three
 # prefixes are accepted because phone keyboards make "$" vs "#" easy to mix up.
-_BOT_TAG = re.compile(r"[$#@](?:analogbot|bot)\b", re.IGNORECASE)
+# The negative lookbehind keeps this from firing inside an email/URL/handle —
+# e.g. "test@bot.com" or "@bothamsupport" — where the tag character is not
+# actually addressing the bot.
+_BOT_TAG = re.compile(r"(?<![\w@.])[$#@](?:analogbot|bot)\b", re.IGNORECASE)
 PROFILE_URL = "https://api.line.me/v2/bot/profile/{uid}"
 GROUP_MEMBER_URL = "https://api.line.me/v2/bot/group/{cid}/member/{uid}"
 ROOM_MEMBER_URL = "https://api.line.me/v2/bot/room/{rid}/member/{uid}"
 # displayName by userId — cached so observing every group message doesn't hit
 # the LINE profile API each time (one lookup per new speaker).
 _name_cache: dict[str, str] = {}
+
+
+def _remove_utf16_span(text: str, index: int, length: int) -> str:
+    """Remove [index, index+length) counted in UTF-16 code units.
+
+    LINE reports mention.mentionees[].index/length in UTF-16 code units, but
+    Python strings are indexed by code point — a non-BMP character (e.g. many
+    emoji) before the mention is 1 code point yet 2 UTF-16 units, so a plain
+    text[:idx] slice drifts out of alignment. Round-tripping through the
+    UTF-16 encoding keeps the offsets correct regardless of what precedes them.
+    """
+    encoded = text.encode("utf-16-le")
+    before, after = encoded[:index * 2], encoded[(index + length) * 2:]
+    return (before + after).decode("utf-16-le", "ignore")
 
 
 def _extract_addressed_text(msg: dict) -> tuple[bool, str]:
@@ -101,7 +118,7 @@ def _extract_addressed_text(msg: dict) -> tuple[bool, str]:
             idx = m.get("index", 0)
             length = m.get("length", 0)
             # Remove the @mention substring and extract the actual user prompt
-            cleaned = (text[:idx] + text[idx + length:]).strip()
+            cleaned = _remove_utf16_span(text, idx, length).strip()
             return True, cleaned
 
     # Text prefix patterns: $bot / @AnalogBot / @bot / #bot
