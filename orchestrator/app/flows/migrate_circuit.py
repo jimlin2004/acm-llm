@@ -76,7 +76,17 @@ def _parse_specs(spec_text: str) -> list:
 
 
 def prepare(message: str, attachments: list[Attachment], params: dict) -> dict:
-    """Parse the `/migrate` command block into pipeline inputs."""
+    """Parse the `/migrate` command block into pipeline inputs.
+
+    Also reachable without the `/migrate` command: the router can pick this
+    flow straight from natural language (it's a normal FLOWS entry). In that
+    case there is no template to default source/target from, so a missing
+    target PDK is asked for (MissingParams(param="target_pdk")) rather than
+    silently guessed — an explicit `/migrate` with the field left blank keeps
+    the old default-to-umc180 behavior, since that's a power user filling in
+    a known template, not the router taking a guess.
+    """
+    explicit_cmd = bool(re.match(r"^\s*/migrate\b", message or ""))
     body = message or ""
     # strip a leading /migrate token
     body = re.sub(r"^\s*/migrate\b[ \t]*", "", body, count=1)
@@ -86,7 +96,18 @@ def prepare(message: str, attachments: list[Attachment], params: dict) -> dict:
         return m.group(1).strip().lower() if m else default
 
     source_pdk = params.get("source_pdk") or field("source", "sky130")
-    target_pdk = params.get("target_pdk") or field("target", "umc180")
+    target_pdk = params.get("target_pdk") or field("target", None)
+    if not target_pdk:
+        if explicit_cmd:
+            target_pdk = "umc180"
+        else:
+            raise MissingParams(_pick(
+                message,
+                en="Which PDK should I migrate this circuit to? Please "
+                   "reply with just the PDK name (e.g. umc180).",
+                zh="請問要把這顆電路遷移到哪個 PDK？"
+                   "請直接回覆 PDK 名稱（例如 umc180）。"),
+                param="target_pdk")
 
     spec_text = ""
     # MULTILINE (m) is essential: `spec:` sits on its own line after

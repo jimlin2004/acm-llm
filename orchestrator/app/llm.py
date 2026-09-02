@@ -7,8 +7,10 @@ tokens and tokens/s, attributed to the requesting channel/user.
 
 import json
 import time
+from types import SimpleNamespace
 from typing import AsyncIterator
 
+import httpx
 from openai import AsyncOpenAI
 
 from . import access_log, config
@@ -68,18 +70,64 @@ def _log_buffered(kind: str, model: str, t0: float, resp=None,
         error=f"{type(error).__name__}: {error}" if error else None)
 
 
+def _ollama_native_url(base_url: str) -> str:
+    """Ollama's native /api/chat lives beside (not under) the OpenAI-compat
+    mount: http://host:11434/v1 -> http://host:11434/api/chat."""
+    root = base_url[:-3] if base_url.endswith("/v1") else base_url
+    return root.rstrip("/") + "/api/chat"
+
+
+async def _ollama_native_create(base_url: str, model: str, messages: list[dict],
+                                temperature: float, max_tokens: int,
+                                json_mode: bool = False):
+    """Call Ollama's native /api/chat with think disabled, and wrap the reply
+    to look like an OpenAI ChatCompletion so callers (and _log_buffered) don't
+    need a separate code path. See config.LLM_OLLAMA_NATIVE_THINK_OFF."""
+    body = {
+        "model": model,
+        "messages": _normalize(messages),
+        "think": False,
+        "stream": False,
+        "options": {"temperature": temperature, "num_predict": max_tokens},
+    }
+    if json_mode:
+        body["format"] = "json"
+    async with httpx.AsyncClient(timeout=180.0) as hc:
+        r = await hc.post(_ollama_native_url(base_url), json=body)
+        r.raise_for_status()
+        data = r.json()
+    msg = data.get("message") or {}
+    message = SimpleNamespace(
+        content=msg.get("content") or "",
+        reasoning=None,
+        reasoning_content=msg.get("thinking") or "",
+        model_extra={},
+        tool_calls=None,
+    )
+    usage = SimpleNamespace(
+        prompt_tokens=data.get("prompt_eval_count"),
+        completion_tokens=data.get("eval_count"),
+    )
+    return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=usage)
+
+
 async def complete(messages: list[dict], temperature: float = 0.2,
                    max_tokens: int | None = None,
                    oai: AsyncOpenAI | None = None, model: str | None = None) -> str:
     model = model or config.LLM_MODEL
     t0 = time.time()
     try:
-        resp = await (oai or client).chat.completions.create(
-            model=model,
-            messages=_normalize(messages),
-            temperature=temperature,
-            **_tok_kwargs(model, max_tokens),
-        )
+        if config.LLM_OLLAMA_NATIVE_THINK_OFF and oai is None:
+            resp = await _ollama_native_create(
+                config.LLM_BASE_URL, model, messages, temperature,
+                max_tokens or config.LLM_MAX_TOKENS)
+        else:
+            resp = await (oai or client).chat.completions.create(
+                model=model,
+                messages=_normalize(messages),
+                temperature=temperature,
+                **_tok_kwargs(model, max_tokens),
+            )
     except Exception as e:
         _log_buffered("complete", model, t0, error=e)
         raise
@@ -284,20 +332,26 @@ async def complete_json(messages: list[dict], schema: dict,
     model; pass escalate=False for best-effort callers that would rather skip
     than pay for the slow main model (e.g. the pre-sim netlist lint).
     """
-    use_client, model = ((fast_client, config.ROUTER_LLM_MODEL) if fast
-                         else (client, config.LLM_MODEL))
+    use_client, base_url, model = (
+        (fast_client, config.ROUTER_LLM_BASE_URL, config.ROUTER_LLM_MODEL) if fast
+        else (client, config.LLM_BASE_URL, config.LLM_MODEL))
     t0 = time.time()
     try:
-        resp = await use_client.chat.completions.create(
-            model=model,
-            messages=_normalize(messages),
-            temperature=temperature,
-            **_tok_kwargs(model, max_tokens),
-            response_format={
-                "type": "json_schema",
-                "json_schema": {"name": "output", "schema": schema},
-            },
-        )
+        if config.LLM_OLLAMA_NATIVE_THINK_OFF:
+            resp = await _ollama_native_create(
+                base_url, model, messages, temperature,
+                max_tokens or config.LLM_MAX_TOKENS, json_mode=True)
+        else:
+            resp = await use_client.chat.completions.create(
+                model=model,
+                messages=_normalize(messages),
+                temperature=temperature,
+                **_tok_kwargs(model, max_tokens),
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {"name": "output", "schema": schema},
+                },
+            )
         text = resp.choices[0].message.content or ""
         _log_buffered("complete_json", model, t0, resp)
     except Exception as e:

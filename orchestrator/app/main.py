@@ -48,12 +48,19 @@ _NETLIST_REF = re.compile(
     r"(?iu)netlist|circuit|电路|電路|\.cir\b|\.sp\b|\.spice\b")
 
 
-# Ambiguous-intent clarification: router.route() returns a multi-label
-# `candidates` list (see router.py); >=2 candidates means the router saw more
-# than one plausible flow, and it's this layer — not the LLM — that decides
-# that counts as "ask the user". The candidate list (plus the ORIGINAL message
-# and attachments, since a numeric reply like "1" carries none of the actual
-# request content) is kept per user for one follow-up turn.
+# Resumable clarify: one follow-up reply resolves back into the original
+# request. Two situations land here, distinguished by entry["kind"]:
+#   "candidates" — router.route() returned >=2 plausible flow_ids (see
+#     router.py); it's this layer, not the LLM, that decides >=1 candidate
+#     means "ask the user". The reply is a number or a flow keyword.
+#   "param"      — a flow was already picked (by the router or a forced
+#     flow_id) but its prepare() raised MissingParams(param=...) — one
+#     specific params_schema key is missing and no attachment/instruction can
+#     fill it in. The reply is taken verbatim as that param's value (see
+#     migrate_circuit.prepare()'s target_pdk case).
+# Either way the ORIGINAL message and attachments are kept (a bare "1" or
+# "umc180" reply carries none of the actual request content) so the request
+# can be replayed once the follow-up resolves it.
 _CLARIFY_TTL = 180.0
 _pending_clarify: dict[str, dict] = {}
 
@@ -96,19 +103,32 @@ def _clarify_question(message: str, candidates: list[str]) -> str:
 
 
 def _resolve_pending_clarify(user_id: str, message: str):
-    """Match a follow-up reply (number or flow keyword) against the candidates
-    from the last clarify question for this user. Consumes the entry either
-    way — a clarify only gets one follow-up attempt before routing fresh.
+    """Resolve a follow-up reply against the last clarify question for this
+    user (see the `_pending_clarify` comment for the two `kind`s). Consumes
+    the entry either way — a clarify only gets one follow-up attempt before
+    routing fresh.
 
-    Returns (flow_id, original_message, original_attachments) so the caller
-    replays the ORIGINAL request against the chosen flow — a bare "1" reply
-    carries none of the actual netlist/request content — or None if nothing
-    (or nothing current) is pending."""
+    Returns (flow_id, original_message, original_attachments, extra_params)
+    so the caller replays the ORIGINAL request against the chosen flow — a
+    bare "1" or "umc180" reply carries none of the actual request content —
+    or None if nothing (or nothing current) is pending."""
     entry = _pending_clarify.pop(user_id, None)
     if not entry or time.time() - entry["ts"] > _CLARIFY_TTL:
         return None
-    candidates = entry["candidates"]
+    attachments = [Attachment(a["name"], a["content"]) for a in entry["attachments"]]
     stripped = (message or "").strip()
+
+    if entry.get("kind") == "param":
+        if not stripped:
+            return None
+        # Trust the reply is (mostly) just the value — pull the first
+        # identifier-shaped token out of it (handles "umc180", "target:
+        # umc180", "umc180 please", ...) and fall back to the raw text.
+        m = re.search(r"[A-Za-z][A-Za-z0-9_]*", stripped)
+        value = (m.group(0) if m else stripped).lower()
+        return entry["flow_id"], entry["message"], attachments, {entry["param"]: value}
+
+    candidates = entry["candidates"]
     chosen = None
     m = re.match(r"[\s([]*([1-9])\b", stripped)
     if m:
@@ -121,8 +141,7 @@ def _resolve_pending_clarify(user_id: str, message: str):
                        if fid != "chat" and fid.lower() in low), None)
     if chosen is None:
         return None
-    attachments = [Attachment(a["name"], a["content"]) for a in entry["attachments"]]
-    return chosen, entry["message"], attachments
+    return chosen, entry["message"], attachments, {}
 
 
 def _now_line() -> str:
@@ -409,12 +428,14 @@ async def _flow_start_impl(req: StartRequest):
     if flow_id is None and not req.images:
         resolved = _resolve_pending_clarify(req.user_id, req.message)
         if resolved is not None:
-            flow_id, req.message, attachments = resolved
+            flow_id, req.message, attachments, resolved_params = resolved
+            params = {**resolved_params, **params}
         else:
             routed = await router.route(req.message, [a.name for a in attachments])
             candidates = routed["candidates"]
             if len(candidates) >= 2:
                 _pending_clarify[req.user_id] = {
+                    "kind": "candidates",
                     "candidates": candidates, "message": req.message,
                     "attachments": [{"name": a.name, "content": a.content}
                                     for a in attachments],
@@ -444,6 +465,18 @@ async def _flow_start_impl(req: StartRequest):
         try:
             initial_state = spec.prepare(req.message, attachments, params)
         except MissingParams as e:
+            # One specific param is missing and nothing else can supply it
+            # (e.g. migrate_circuit picked by the router with no target PDK
+            # in the message) — remember it as a resumable clarify so the
+            # user's next reply (just the value) replays this exact request.
+            if e.param and attachments and req.flow_id is None:
+                _pending_clarify[req.user_id] = {
+                    "kind": "param", "flow_id": flow_id, "param": e.param,
+                    "message": req.message,
+                    "attachments": [{"name": a.name, "content": a.content}
+                                    for a in attachments],
+                    "ts": time.time()}
+                return {"thread_id": None, "status": "clarify", "message": str(e)}
             # A router-guessed flow with no attachment usually means the
             # router mistook a plain question for a circuit request — answer
             # it as ordinary chat instead of demanding a netlist. A forced
@@ -529,13 +562,15 @@ async def flow_stream(req: StartRequest):
         if flow_id is None and not req.images:
             resolved = _resolve_pending_clarify(req.user_id, req.message)
             if resolved is not None:
-                flow_id, req.message, attachments = resolved
+                flow_id, req.message, attachments, resolved_params = resolved
+                params = {**resolved_params, **params}
             else:
                 routed = await router.route(req.message,
                                             [a.name for a in attachments])
                 candidates = routed["candidates"]
                 if len(candidates) >= 2:
                     _pending_clarify[req.user_id] = {
+                        "kind": "candidates",
                         "candidates": candidates, "message": req.message,
                         "attachments": [{"name": a.name, "content": a.content}
                                         for a in attachments],
@@ -595,6 +630,19 @@ async def flow_stream(req: StartRequest):
         try:
             initial_state = spec.prepare(req.message, attachments, params)
         except MissingParams as e:
+            # Same resumable-clarify path as /flow/start: one missing param,
+            # nothing else can supply it — remember it so the next reply
+            # (just the value) replays this exact request.
+            if e.param and attachments and req.flow_id is None:
+                _pending_clarify[req.user_id] = {
+                    "kind": "param", "flow_id": flow_id, "param": e.param,
+                    "message": req.message,
+                    "attachments": [{"name": a.name, "content": a.content}
+                                    for a in attachments],
+                    "ts": time.time()}
+                yield _sse({"type": "delta", "text": str(e)})
+                yield _sse({"type": "done"})
+                return
             # Same fallback as /flow/start: router misroute of a plain
             # question (no attachment) is answered as chat.
             if req.flow_id is None and not attachments:

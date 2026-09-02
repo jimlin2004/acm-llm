@@ -119,7 +119,6 @@ async def analyze_netlist(state: State) -> dict:
             ANALYZE_SCHEMA,
             fast=True,
             escalate=False,
-            max_tokens=1024,
         )
     except Exception:
         logging.getLogger("orchestrator").warning(

@@ -8,6 +8,17 @@ LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-5.4-mini")
 LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "8192"))
 
+# Ollama's OpenAI-compatible /v1/chat/completions endpoint silently ignores
+# `think`/`chat_template_kwargs` (verified against qwen3.5:9b — a vLLM/SGLang-
+# style extra_body override is a no-op there). Its native /api/chat endpoint
+# does honor `think: false`. When this is on, complete()/complete_json() call
+# that native endpoint directly instead of going through the OpenAI SDK, for
+# LLM_BASE_URL only (the router/agent tiers are untouched). Never enable
+# against the real OpenAI API — there is no native endpoint to fall back to.
+LLM_OLLAMA_NATIVE_THINK_OFF = (
+    os.environ.get("LLM_OLLAMA_NATIVE_THINK_OFF", "false").lower() == "true"
+)
+
 # Web search — OpenAI's built-in `web_search` tool (Responses API). When on, the
 # plain-chat path lets the model decide whether to look things up on the web
 # (current process nodes, part datasheets, prices...) and cite sources. Needs an

@@ -58,6 +58,7 @@ services:
       - LLM_BASE_URL=${LLM_BASE_URL:-https://api.openai.com/v1}
       - LLM_API_KEY=${LLM_API_KEY:-}
       - LLM_MODEL=${LLM_MODEL:-gpt-5.4-mini}
+      - LLM_OLLAMA_NATIVE_THINK_OFF=${LLM_OLLAMA_NATIVE_THINK_OFF:-}
       - ROUTER_LLM_BASE_URL=${ROUTER_LLM_BASE_URL:-}
       - ROUTER_LLM_API_KEY=${ROUTER_LLM_API_KEY:-}
       - ROUTER_LLM_MODEL=${ROUTER_LLM_MODEL:-}

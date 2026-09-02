@@ -20,7 +20,20 @@ class MissingParams(Exception):
 
     The message is sent back to the user as a clarify response instead of
     running the flow with guessed inputs.
+
+    `param`, when set, names the single params_schema key that's missing.
+    app/main.py then remembers a resumable clarify for it: the user's very
+    next reply is taken as that param's value and the original message +
+    attachments are replayed against the same flow — the same "answer once,
+    the request continues" UX as the multi-candidate clarify. Leave it None
+    when no short answer can fix things (e.g. "no netlist found" — the user
+    has to resend a whole file, there's nothing to slot a one-word reply
+    into).
     """
+
+    def __init__(self, message: str, param: str | None = None):
+        super().__init__(message)
+        self.param = param
 
 
 @dataclass

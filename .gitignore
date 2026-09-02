@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 *.secret.md
+secret/
 
 # Python
 __pycache__/
@@ -23,3 +24,4 @@ venv/
 .vscode/
 .claude/
 tests/
+.pytest_cache/
