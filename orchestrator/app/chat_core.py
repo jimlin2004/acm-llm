@@ -133,6 +133,10 @@ MSG = {
         "zh": "我打開了您的 .zip，但裡面找不到 SPICE netlist "
               "（.cir/.sp/.spice/.net/.ckt）。請將 netlist 檔案壓縮後重新傳送。",
     },
+    "file_observed_group": {
+        "en": "📎 Got your file — mention me (@Bot) to have me take a look.",
+        "zh": "📎 已收到您的檔案 — 請 @Bot 讓我來看看。",
+    },
     "greeting": {
         "en": "👋 New session started.\nHow can I help you today? You can paste a netlist, "
               "upload a .cir file, or ask me anything! Type /help for the list of commands.",

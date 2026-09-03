@@ -82,6 +82,8 @@ services:
       - MIGRATION_LLM_MODEL=${MIGRATION_LLM_MODEL:-gpt-5-mini}
       # Abuse guard: global cap on concurrently running flows.
       - MAX_CONCURRENT_FLOWS=${MAX_CONCURRENT_FLOWS:-3}
+      # Universal pre-execution confirm gate — kill switch.
+      - CONFIRM_ENABLED=${CONFIRM_ENABLED:-true}
     ports:
       # NOT 0.0.0.0 — the API has no auth. Loopback for host tools plus the
       # docker bridge gateway so Open WebUI (bridge net) still reaches it via

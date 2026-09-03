@@ -110,10 +110,20 @@ class ChatMemory:
                    session_id TEXT,
                    ts REAL,
                    name TEXT,
-                   content TEXT)""")
+                   content TEXT,
+                   source TEXT DEFAULT 'file')""")
         await self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_netlist_session "
             "ON session_netlists(user_id, session_id, id)")
+        # Migration for a DB created before `source` existed — CREATE TABLE IF
+        # NOT EXISTS above is a no-op against an already-existing table, so an
+        # old DB needs the column added explicitly. Fails harmlessly (column
+        # already exists) on a fresh DB or one already migrated.
+        try:
+            await self._db.execute(
+                "ALTER TABLE session_netlists ADD COLUMN source TEXT DEFAULT 'file'")
+        except aiosqlite.OperationalError:
+            pass
         # Citations (title, url) from the CURRENT session's most recent
         # web-search turn. They exist only on the turn that actually searches,
         # so caching them lets a "which website did you use?" follow-up — which
@@ -349,9 +359,11 @@ class ChatMemory:
             if not content:
                 continue
             await self._db.execute(
-                "INSERT INTO session_netlists(user_id, session_id, ts, name, content) "
-                "VALUES (?,?,?,?,?)",
-                (user_id, sid, time.time(), nl.get("name") or "circuit.cir", content))
+                "INSERT INTO session_netlists"
+                "(user_id, session_id, ts, name, content, source) "
+                "VALUES (?,?,?,?,?,?)",
+                (user_id, sid, time.time(), nl.get("name") or "circuit.cir", content,
+                 nl.get("source") or "file"))
         await self._db.execute(
             "DELETE FROM session_netlists WHERE user_id = ? AND session_id = ? "
             "AND id NOT IN (SELECT id FROM session_netlists "
@@ -363,11 +375,12 @@ class ChatMemory:
         """Netlists of the CURRENT session, oldest→newest ([] after /start)."""
         sid = await self._session_id(user_id)
         cur = await self._db.execute(
-            "SELECT name, content FROM session_netlists "
+            "SELECT name, content, source FROM session_netlists "
             "WHERE user_id = ? AND session_id = ? ORDER BY id DESC LIMIT ?",
             (user_id, sid, _MAX_SESSION_NETLISTS))
         rows = await cur.fetchall()
-        return [{"name": r["name"], "content": r["content"]}
+        return [{"name": r["name"], "content": r["content"],
+                 "source": r["source"] or "file"}
                 for r in reversed(rows)]
 
     async def save_sources(self, user_id: str, sources: list):

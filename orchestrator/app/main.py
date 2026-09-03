@@ -49,7 +49,7 @@ _NETLIST_REF = re.compile(
 
 
 # Resumable clarify: one follow-up reply resolves back into the original
-# request. Two situations land here, distinguished by entry["kind"]:
+# request. Three situations land here, distinguished by entry["kind"]:
 #   "candidates" — router.route() returned >=2 plausible flow_ids (see
 #     router.py); it's this layer, not the LLM, that decides >=1 candidate
 #     means "ask the user". The reply is a number or a flow keyword.
@@ -58,11 +58,32 @@ _NETLIST_REF = re.compile(
 #     specific params_schema key is missing and no attachment/instruction can
 #     fill it in. The reply is taken verbatim as that param's value (see
 #     migrate_circuit.prepare()'s target_pdk case).
-# Either way the ORIGINAL message and attachments are kept (a bare "1" or
-# "umc180" reply carries none of the actual request content) so the request
-# can be replayed once the follow-up resolves it.
+#   "confirm"    — a flow was resolved with high confidence (single candidate,
+#     no missing params) but hasn't run yet: the universal "here's what I
+#     understood, proceed?" gate (see _needs_confirm/_confirm_question). The
+#     reply is parsed as yes/no/neither — a decline cancels the request
+#     outright (see _CLARIFY_CANCELLED) rather than being re-routed as if it
+#     were new request text.
+# In all three cases the ORIGINAL message and attachments are kept (a bare
+# "1"/"umc180"/"yes" reply carries none of the actual request content) so the
+# request can be replayed once the follow-up resolves it.
 _CLARIFY_TTL = 180.0
 _pending_clarify: dict[str, dict] = {}
+
+# Distinct from None (which means "nothing usable — caller re-routes fresh
+# using the reply text verbatim"): a declined "confirm" clarify must stop the
+# request outright, not have the decline text ("no"/"不要") silently routed as
+# if it were a brand new message.
+_CLARIFY_CANCELLED = object()
+
+_CONFIRM_YES = re.compile(
+    r"(?iu)^(y|yes|yeah|yep|yup|sure|ok(ay)?|correct|confirmed?|"
+    r"go ?ahead|proceed|do it|sounds good|that'?s right)$|"
+    r"^(對|对|好|好的|是|是的|沒錯|没错|確定|确定|可以|沒問題|没问题|"
+    r"開始|开始|執行|执行|嗯)$")
+_CONFIRM_NO = re.compile(
+    r"(?iu)^(n|no|nope|nah|cancel|stop|wrong|don'?t|never ?mind)$|"
+    r"^(不|不是|不對|不对|不要|取消|算了|不用|先不要|錯了|错了)$")
 
 # Short, user-facing description of what each flow would do, for the clarify
 # question. Falls back to the raw flow_id if a flow isn't listed here (still
@@ -102,20 +123,81 @@ def _clarify_question(message: str, candidates: list[str]) -> str:
     return _pick(message, en=build("en"), zh=build("zh"))
 
 
+def _confirm_question(message: str, flow_id: str, params: dict,
+                      filename: str | None = None,
+                      attachments: list | None = None) -> str:
+    """Deterministic (code-built, not LLM-built — same rationale as
+    _clarify_question) restate-and-confirm text for the universal
+    pre-execution confirm gate: "here's what I understood, proceed?".
+
+    `filename` (from the flow's prepare()-returned state, when it has one —
+    e.g. evaluate_circuit/agent_eval) names which netlist this will run
+    against. `attachments` is searched for that name to report whether it was
+    an uploaded file or pasted as plain text (registry.Attachment.source) —
+    line_webhook wraps a text-pasted netlist into a synthetic circuit.cir
+    attachment before it ever reaches here, so the filename alone can't tell
+    the two apart reliably."""
+    label = _CLARIFY_LABELS.get(flow_id, {})
+    shown = {k: v for k, v in params.items() if v not in (None, "")}
+    source = next((a.source for a in (attachments or []) if a.name == filename), None)
+    def build(lang: str) -> str:
+        desc = label.get(lang, flow_id)
+        if not shown:
+            detail = ""
+        else:
+            sep = "、" if lang == "zh" else ", "
+            items = sep.join(f"{k}={v}" for k, v in shown.items())
+            detail = f"（{items}）" if lang == "zh" else f" ({items})"
+        if filename and source == "text":
+            file_line = (f"\n使用您貼上的電路內容（{filename}）" if lang == "zh" else
+                        f"\nUsing the circuit you pasted ({filename})")
+        elif filename:
+            file_line = (f"\n使用您上傳的檔案：{filename}" if lang == "zh" else
+                        f"\nUsing your uploaded file: {filename}")
+        else:
+            file_line = ""
+        return (f"我了解您的意思是：{desc}{detail}。{file_line}\n\n"
+                f"請回覆「好」確認執行，或直接告訴我需要修改的地方。"
+                if lang == "zh" else
+                f"I understand you'd like to: {desc}{detail}.{file_line}\n\n"
+                f"Reply \"yes\" to proceed, or tell me what to change.")
+    return _pick(message, en=build("en"), zh=build("zh"))
+
+
+def _needs_confirm(flow_id: str, req: "StartRequest") -> bool:
+    """Whether a freshly-routed flow should pause for a "here's what I
+    understood, proceed?" confirmation before it runs. Only meaningful on the
+    fresh-route path — call sites must separately skip this for a flow
+    reached by replaying an already-resolved clarify (an `already_confirmed`
+    local flag; see _flow_start_impl/flow_stream), since that round-trip
+    already established the user's intent and asking again would triple the
+    back-and-forth for no benefit."""
+    if not config.CONFIRM_ENABLED:
+        return False
+    if flow_id == "chat":
+        return False  # plain Q&A: no side effects, gating it is just friction
+    if req.flow_id is not None:
+        return False  # explicitly forced (e.g. /migrate command) — already explicit
+    return True
+
+
 def _resolve_pending_clarify(user_id: str, message: str):
     """Resolve a follow-up reply against the last clarify question for this
-    user (see the `_pending_clarify` comment for the two `kind`s). Consumes
+    user (see the `_pending_clarify` comment for the three `kind`s). Consumes
     the entry either way — a clarify only gets one follow-up attempt before
     routing fresh.
 
     Returns (flow_id, original_message, original_attachments, extra_params)
     so the caller replays the ORIGINAL request against the chosen flow — a
-    bare "1" or "umc180" reply carries none of the actual request content —
-    or None if nothing (or nothing current) is pending."""
+    bare "1"/"umc180"/"yes" reply carries none of the actual request content —
+    or None if nothing (or nothing current) is pending, or _CLARIFY_CANCELLED
+    if a "confirm" clarify was explicitly declined (the caller must stop the
+    request, not treat this the same as None)."""
     entry = _pending_clarify.pop(user_id, None)
     if not entry or time.time() - entry["ts"] > _CLARIFY_TTL:
         return None
-    attachments = [Attachment(a["name"], a["content"]) for a in entry["attachments"]]
+    attachments = [Attachment(a["name"], a["content"], a.get("source", "file"))
+                  for a in entry["attachments"]]
     stripped = (message or "").strip()
 
     if entry.get("kind") == "param":
@@ -127,6 +209,14 @@ def _resolve_pending_clarify(user_id: str, message: str):
         m = re.search(r"[A-Za-z][A-Za-z0-9_]*", stripped)
         value = (m.group(0) if m else stripped).lower()
         return entry["flow_id"], entry["message"], attachments, {entry["param"]: value}
+
+    if entry.get("kind") == "confirm":
+        clean = re.sub(r"[\s。！!?？.,~～]+$", "", stripped)
+        if _CONFIRM_NO.fullmatch(clean):
+            return _CLARIFY_CANCELLED
+        if _CONFIRM_YES.fullmatch(clean):
+            return entry["flow_id"], entry["message"], attachments, entry["params"]
+        return None  # free-text reply (e.g. a correction) — caller re-routes fresh
 
     candidates = entry["candidates"]
     chosen = None
@@ -286,6 +376,7 @@ def _busy_reply(message: str) -> dict:
 class AttachmentIn(BaseModel):
     name: str
     content: str
+    source: str = "file"  # "file" (uploaded) or "text" (pasted) — see registry.Attachment
 
 
 class ImageIn(BaseModel):
@@ -385,7 +476,7 @@ async def flow_start(req: StartRequest):
 async def _flow_start_impl(req: StartRequest):
     engine: FlowEngine = app.state.engine
     memory: ChatMemory = app.state.memory
-    attachments = [Attachment(a.name, a.content) for a in req.attachments]
+    attachments = [Attachment(a.name, a.content, a.source) for a in req.attachments]
 
     # Session memory: a fresh session on request, then the recent turns are
     # re-injected into every flow so follow-ups keep context.
@@ -420,16 +511,24 @@ async def _flow_start_impl(req: StartRequest):
             stored_nl = await memory.get_netlists(req.user_id)
             if stored_nl:
                 req.attachments = [AttachmentIn(**a) for a in stored_nl]
-                attachments = [Attachment(a.name, a.content) for a in req.attachments]
+                attachments = [Attachment(a.name, a.content, a.source)
+                              for a in req.attachments]
                 log.info("re-attached %d session netlist(s) for follow-up",
                          len(stored_nl))
 
     flow_id, params = req.flow_id, dict(req.params)
+    already_confirmed = False
     if flow_id is None and not req.images:
         resolved = _resolve_pending_clarify(req.user_id, req.message)
+        if resolved is _CLARIFY_CANCELLED:
+            return {"thread_id": None, "status": "cancelled",
+                    "message": _pick(req.message,
+                        en="Okay, cancelled — let me know how I can help.",
+                        zh="好的，已取消，需要協助請再告訴我。")}
         if resolved is not None:
             flow_id, req.message, attachments, resolved_params = resolved
             params = {**resolved_params, **params}
+            already_confirmed = True
         else:
             routed = await router.route(req.message, [a.name for a in attachments])
             candidates = routed["candidates"]
@@ -437,7 +536,8 @@ async def _flow_start_impl(req: StartRequest):
                 _pending_clarify[req.user_id] = {
                     "kind": "candidates",
                     "candidates": candidates, "message": req.message,
-                    "attachments": [{"name": a.name, "content": a.content}
+                    "attachments": [{"name": a.name, "content": a.content,
+                                     "source": a.source}
                                     for a in attachments],
                     "ts": time.time()}
                 return {"thread_id": None, "status": "clarify",
@@ -473,7 +573,8 @@ async def _flow_start_impl(req: StartRequest):
                 _pending_clarify[req.user_id] = {
                     "kind": "param", "flow_id": flow_id, "param": e.param,
                     "message": req.message,
-                    "attachments": [{"name": a.name, "content": a.content}
+                    "attachments": [{"name": a.name, "content": a.content,
+                                     "source": a.source}
                                     for a in attachments],
                     "ts": time.time()}
                 return {"thread_id": None, "status": "clarify", "message": str(e)}
@@ -495,6 +596,18 @@ async def _flow_start_impl(req: StartRequest):
                                         req.user_id)
             result = {"thread_id": None, "status": "completed", "message": answer}
         else:
+            if not already_confirmed and _needs_confirm(flow_id, req):
+                _pending_clarify[req.user_id] = {
+                    "kind": "confirm", "flow_id": flow_id, "message": req.message,
+                    "params": params,
+                    "attachments": [{"name": a.name, "content": a.content,
+                                     "source": a.source}
+                                    for a in attachments],
+                    "ts": time.time()}
+                return {"thread_id": None, "status": "clarify",
+                        "message": _confirm_question(req.message, flow_id, params,
+                                                      initial_state.get("filename"),
+                                                      attachments)}
             initial_state["history"] = history
             result = await engine.start(flow_id, req.user_id, initial_state,
                                         wait=req.wait)
@@ -556,14 +669,20 @@ async def flow_stream(req: StartRequest):
         return StreamingResponse(gen_busy(), media_type="text/event-stream")
 
     try:
-        attachments = [Attachment(a.name, a.content) for a in req.attachments]
+        attachments = [Attachment(a.name, a.content, a.source) for a in req.attachments]
         flow_id, params = req.flow_id, dict(req.params)
         clarify_question = None
+        already_confirmed = False
         if flow_id is None and not req.images:
             resolved = _resolve_pending_clarify(req.user_id, req.message)
-            if resolved is not None:
+            if resolved is _CLARIFY_CANCELLED:
+                clarify_question = _pick(req.message,
+                    en="Okay, cancelled — let me know how I can help.",
+                    zh="好的，已取消，需要協助請再告訴我。")
+            elif resolved is not None:
                 flow_id, req.message, attachments, resolved_params = resolved
                 params = {**resolved_params, **params}
+                already_confirmed = True
             else:
                 routed = await router.route(req.message,
                                             [a.name for a in attachments])
@@ -572,7 +691,8 @@ async def flow_stream(req: StartRequest):
                     _pending_clarify[req.user_id] = {
                         "kind": "candidates",
                         "candidates": candidates, "message": req.message,
-                        "attachments": [{"name": a.name, "content": a.content}
+                        "attachments": [{"name": a.name, "content": a.content,
+                                         "source": a.source}
                                         for a in attachments],
                         "ts": time.time()}
                     clarify_question = _clarify_question(req.message, candidates)
@@ -637,7 +757,8 @@ async def flow_stream(req: StartRequest):
                 _pending_clarify[req.user_id] = {
                     "kind": "param", "flow_id": flow_id, "param": e.param,
                     "message": req.message,
-                    "attachments": [{"name": a.name, "content": a.content}
+                    "attachments": [{"name": a.name, "content": a.content,
+                                     "source": a.source}
                                     for a in attachments],
                     "ts": time.time()}
                 yield _sse({"type": "delta", "text": str(e)})
@@ -653,6 +774,21 @@ async def flow_stream(req: StartRequest):
                     yield _sse({"type": "delta", "text": delta})
             else:
                 yield _sse({"type": "delta", "text": str(e)})
+            yield _sse({"type": "done"})
+            return
+
+        if not already_confirmed and _needs_confirm(flow_id, req):
+            _pending_clarify[req.user_id] = {
+                "kind": "confirm", "flow_id": flow_id, "message": req.message,
+                "params": params,
+                "attachments": [{"name": a.name, "content": a.content,
+                                 "source": a.source}
+                                for a in attachments],
+                "ts": time.time()}
+            yield _sse({"type": "delta",
+                        "text": _confirm_question(req.message, flow_id, params,
+                                                  initial_state.get("filename"),
+                                                  attachments)})
             yield _sse({"type": "done"})
             return
 

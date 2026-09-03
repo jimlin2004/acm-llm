@@ -79,10 +79,16 @@ def _ollama_native_url(base_url: str) -> str:
 
 async def _ollama_native_create(base_url: str, model: str, messages: list[dict],
                                 temperature: float, max_tokens: int,
-                                json_mode: bool = False):
+                                json_mode: bool = False, schema: dict | None = None):
     """Call Ollama's native /api/chat with think disabled, and wrap the reply
     to look like an OpenAI ChatCompletion so callers (and _log_buffered) don't
-    need a separate code path. See config.LLM_OLLAMA_NATIVE_THINK_OFF."""
+    need a separate code path. See config.LLM_OLLAMA_NATIVE_THINK_OFF.
+
+    Ollama's `format` field accepts either the bare string "json" (valid JSON,
+    any shape) or a full JSON Schema object (constrains the actual shape) —
+    passing `schema` here uses the latter so structured-output callers (e.g.
+    the router's candidates/params extraction) keep the same guarantees they'd
+    get from the OpenAI-compat response_format path."""
     body = {
         "model": model,
         "messages": _normalize(messages),
@@ -91,7 +97,7 @@ async def _ollama_native_create(base_url: str, model: str, messages: list[dict],
         "options": {"temperature": temperature, "num_predict": max_tokens},
     }
     if json_mode:
-        body["format"] = "json"
+        body["format"] = schema if schema is not None else "json"
     async with httpx.AsyncClient(timeout=180.0) as hc:
         r = await hc.post(_ollama_native_url(base_url), json=body)
         r.raise_for_status()
@@ -340,7 +346,7 @@ async def complete_json(messages: list[dict], schema: dict,
         if config.LLM_OLLAMA_NATIVE_THINK_OFF:
             resp = await _ollama_native_create(
                 base_url, model, messages, temperature,
-                max_tokens or config.LLM_MAX_TOKENS, json_mode=True)
+                max_tokens or config.LLM_MAX_TOKENS, json_mode=True, schema=schema)
         else:
             resp = await use_client.chat.completions.create(
                 model=model,

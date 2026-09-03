@@ -13,6 +13,11 @@ from typing import Any, AsyncIterator, Callable, Optional
 class Attachment:
     name: str
     content: str
+    # "file" (an actual uploaded file) or "text" (a netlist pasted as plain
+    # text — line_webhook wraps it into a synthetic attachment before it ever
+    # reaches here). Lets the confirm gate tell the user which one it's about
+    # to use instead of guessing from the filename.
+    source: str = "file"
 
 
 class MissingParams(Exception):

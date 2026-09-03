@@ -19,6 +19,12 @@ LLM_OLLAMA_NATIVE_THINK_OFF = (
     os.environ.get("LLM_OLLAMA_NATIVE_THINK_OFF", "false").lower() == "true"
 )
 
+# Universal pre-execution confirm gate: before running a freshly-routed flow
+# (single confident candidate, no missing params), restate what was understood
+# and wait for the user to confirm. Kill switch in case it proves too naggy in
+# practice — flip off without a code revert/redeploy.
+CONFIRM_ENABLED = os.environ.get("CONFIRM_ENABLED", "true").lower() != "false"
+
 # Web search — OpenAI's built-in `web_search` tool (Responses API). When on, the
 # plain-chat path lets the model decide whether to look things up on the web
 # (current process nodes, part datasheets, prices...) and cite sources. Needs an

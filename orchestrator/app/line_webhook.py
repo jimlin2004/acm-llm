@@ -466,7 +466,7 @@ async def _run_and_reply(resp: "_Responder", text: str, attachment=None,
         if attachments is None:
             nl = chat_core.extract_netlist(text)
             if nl:
-                attachments = [{"name": "circuit.cir", "content": nl}]
+                attachments = [{"name": "circuit.cir", "content": nl, "source": "text"}]
         body = chat_core.build_flow_body(
             f"line:{uid}", text,
             client_meta={"channel": "line", "chat_id": uid,
@@ -694,7 +694,8 @@ async def _observe(uid: str, sender: str | None, *, text: str = "",
                               "mime": image["mime"]}]
     if attachment is not None:
         payload["attachments"] = [{"name": attachment["name"],
-                                   "content": attachment["content"]}]
+                                   "content": attachment["content"],
+                                   "source": attachment.get("source", "file")}]
     if not body and "images" not in payload and "attachments" not in payload:
         return
     try:
@@ -729,8 +730,8 @@ async def _file_attachment(resp: "_Responder", msg: dict, *, notify: bool):
             if notify:
                 await resp.text(_msg(uid, "zip_no_netlist"))
             return None
-        return {"name": found[0], "content": found[1]}
-    return {"name": name, "content": raw.decode("utf-8", "replace")}
+        return {"name": found[0], "content": found[1], "source": "file"}
+    return {"name": name, "content": raw.decode("utf-8", "replace"), "source": "file"}
 
 
 async def _handle_message_event(ev: dict):
@@ -784,6 +785,12 @@ async def _handle_message_event(ev: dict):
             att = await _file_attachment(resp, msg, notify=False)
             if att is not None:
                 await _observe(uid, sender, attachment=att)
+                # Unlike text, a file can't carry an "@Bot" tag, so it's never
+                # "addressed" on its own — but staying fully silent left users
+                # unsure whether the upload even registered. One short ack,
+                # distinct from a real analysis, resolves that without
+                # breaking the "don't reply to unaddressed messages" rule.
+                await resp.text(_msg(uid, "file_observed_group"))
         return
 
     # --- 1:1 direct chat: unchanged — every message is a request to the bot.
